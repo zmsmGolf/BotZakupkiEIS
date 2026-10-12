@@ -699,18 +699,24 @@ async def set_bot_commands(bot: Bot):
 # === Main ===
 
 async def main():
-    print("!!! ПРОЦЕСС ЗАПУСКА БОТА НАЧАТ !!!") 
+    print("!!! ПРОЦЕСС ЗАПУСКА БОТА НАЧАТ !!!")
+    
+    # Проверка получения токена
+    if not BOT_TOKEN or "ВАШ_ТОКЕН" in BOT_TOKEN:
+        print("❌ ОШИБКА: Токен бота не найден в переменных окружения!")
+        logger.error("Токен бота не найден!")
+        return
+    else:
+        print(f"✅ Токен успешно загружен (длина: {len(BOT_TOKEN)} символов)")
+
     await init_db()
 
-    # Принудительно отключаем IPv6, заставляя aiohttp работать строго через IPv4
-    connector = aiohttp.TCPConnector(family=socket.AF_INET)
-    timeout = ClientTimeout(total=60, connect=15)
-    session = AiohttpSession(connector=connector, timeout=timeout)
-
-    bot = Bot(token=BOT_TOKEN, session=session)
+    # Чистая инициализация бота без конфликтующих параметров
+    bot = Bot(token=BOT_TOKEN)
     
     try:
         await set_bot_commands(bot)
+        print("✅ Официальное меню команд Telegram установлено!")
     except Exception as e:
         logger.error(f"Не удалось установить меню команд: {e}")
 
@@ -722,6 +728,7 @@ async def main():
     bot.__dict__["purchase_checker"] = checker
     await checker.start()
 
+    print("🚀🚀🚀 БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ! 🚀🚀🚀")
     logger.info("Бот запущен и готов к работе!")
 
     try:
