@@ -2,6 +2,7 @@ import aiohttp
 import asyncio
 import re
 import socket
+import ssl
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -29,20 +30,24 @@ class Purchase:
 
 
 class ZakupkiParser:
-    """Парсер для zakupki.gov.ru с поддержкой обхода SSL-сертификатов РФ"""
+    """Парсер для zakupki.gov.ru с поддержкой больших таймаутов и заголовков Chrome"""
 
     BASE_URL = "https://zakupki.gov.ru"
     SEARCH_URL = f"{BASE_URL}/epz/order/extendedsearch/results.html"
 
+    # Полноценные заголовки современного браузера Chrome
     HEADERS = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/123.0.0.0 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
-        "Connection": "keep-alive",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Sec-Ch-Ua": '"Not-A.Brand";v="99", "Chromium";v="124", "Google Chrome";v="124"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
     }
 
     REGION_CODES = {
@@ -66,9 +71,9 @@ class ZakupkiParser:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=20, connect=10)
+            # Увеличиваем время ожидания ответа от закупков до 60 секунд
+            timeout = aiohttp.ClientTimeout(total=60, connect=25, sock_read=45)
             
-            # Чистое отключение проверки SSL без конфликтующих параметров
             connector = aiohttp.TCPConnector(
                 family=socket.AF_INET,
                 ssl=False
@@ -84,6 +89,22 @@ class ZakupkiParser:
     async def close(self):
         if self.session and not self.session.closed:
             await self.session.close()
+
+    async def _fetch_page(self, url: str, params: list, retries: int = 2) -> str:
+        """Безопасный запрос с повторными попытками при торможении сайта"""
+        for attempt in range(1, retries + 1):
+            try:
+                session = await self._get_session()
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        return await response.text()
+                    else:
+                        logger.warning(f"Статус ответа {response.status} на попытке {attempt}")
+            except Exception as e:
+                logger.warning(f"Попытка {attempt}/{retries} не удалась ({type(e).__name__}). Повтор...")
+                if attempt < retries:
+                    await asyncio.sleep(2)
+        return ""
 
     async def search_purchases(
         self,
@@ -114,27 +135,25 @@ class ZakupkiParser:
             )
 
             try:
-                session = await self._get_session()
-                async with session.get(self.SEARCH_URL, params=params) as response:
-                    if response.status != 200:
-                        logger.warning(f"Страница {current_page}: статус {response.status}, прерывание.")
-                        break
+                html = await self._fetch_page(self.SEARCH_URL, params)
+                if not html:
+                    logger.warning(f"Не удалось получить страницу {current_page}. Завершение сканирования.")
+                    break
 
-                    html = await response.text()
-                    page_items = self._parse_search_results(html)
+                page_items = self._parse_search_results(html)
 
-                    if not page_items:
-                        logger.info(f"Достигнут конец выдачи на странице {current_page - 1}.")
-                        break
+                if not page_items:
+                    logger.info(f"Достигнут конец выдачи на странице {current_page - 1}.")
+                    break
 
-                    for item in page_items:
-                        if item.number not in purchases_dict:
-                            purchases_dict[item.number] = item
+                for item in page_items:
+                    if item.number not in purchases_dict:
+                        purchases_dict[item.number] = item
 
                 if current_page % 10 == 0:
                     logger.info(f"Обработано страниц: {current_page}/{max_pages}, собрано лотов: {len(purchases_dict)}")
 
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.3)
 
             except Exception as e:
                 logger.error(f"Ошибка при обработке страницы {current_page}: {type(e).__name__} - {e}")
