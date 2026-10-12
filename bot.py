@@ -1,6 +1,9 @@
 import asyncio
 import logging
 import sys
+import os
+import socket
+import aiohttp
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -11,6 +14,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiohttp import ClientTimeout
 
 from config import BOT_TOKEN
 from database import (
@@ -53,7 +58,6 @@ router = Router()
 # === Клавиатуры ===
 
 def main_keyboard() -> ReplyKeyboardMarkup:
-    """Главная постоянная клавиатура"""
     keyboard = [
         [
             KeyboardButton(text="🔍 Мои фильтры"),
@@ -75,7 +79,6 @@ def main_keyboard() -> ReplyKeyboardMarkup:
 
 
 def cancel_keyboard() -> ReplyKeyboardMarkup:
-    """Клавиатура с кнопкой отмены во время ввода данных"""
     keyboard = [
         [KeyboardButton(text="❌ Отмена")]
     ]
@@ -83,7 +86,6 @@ def cancel_keyboard() -> ReplyKeyboardMarkup:
 
 
 def skip_keyboard() -> InlineKeyboardMarkup:
-    """Инлайн-кнопка пропуска необязательного шага"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="⏭ Пропустить этот шаг", callback_data="skip")]
@@ -92,7 +94,6 @@ def skip_keyboard() -> InlineKeyboardMarkup:
 
 
 def law_type_keyboard() -> InlineKeyboardMarkup:
-    """Выбор закона"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -107,7 +108,6 @@ def law_type_keyboard() -> InlineKeyboardMarkup:
 
 
 def confirm_keyboard() -> InlineKeyboardMarkup:
-    """Подтверждение сохранения фильтра"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -119,7 +119,6 @@ def confirm_keyboard() -> InlineKeyboardMarkup:
 
 
 def filter_actions_keyboard(filter_id: int) -> InlineKeyboardMarkup:
-    """Кнопка удаления конкретного фильтра"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -137,7 +136,6 @@ def filter_actions_keyboard(filter_id: int) -> InlineKeyboardMarkup:
 @router.message(F.text == "❌ Отмена")
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
-    """Единый обработчик отмены любого действия"""
     current_state = await state.get_state()
     if current_state is not None:
         await state.clear()
@@ -188,18 +186,18 @@ async def cmd_help(message: Message):
     await message.answer(help_text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
 
 
-# === Добавление в избранное и удаление (Callback) ===
+# === Избранное ===
 
 @router.callback_query(F.data.startswith("fav_add_"))
 async def process_fav_add(callback: CallbackQuery):
     purchase_number = callback.data.replace("fav_add_", "")
     success = await add_favorite(callback.from_user.id, purchase_number)
-
+    
     if success:
         await callback.answer("⭐ Закупка добавлена в избранное!")
         fav_text = "❤️ В избранном"
         fav_callback = f"fav_rem_{purchase_number}"
-
+        
         original_markup = callback.message.reply_markup
         new_inline_keyboard = []
         for row in original_markup.inline_keyboard:
@@ -210,7 +208,7 @@ async def process_fav_add(callback: CallbackQuery):
                 else:
                     new_row.append(btn)
             new_inline_keyboard.append(new_row)
-
+            
         await callback.message.edit_reply_markup(
             reply_markup=InlineKeyboardMarkup(inline_keyboard=new_inline_keyboard)
         )
@@ -222,12 +220,12 @@ async def process_fav_add(callback: CallbackQuery):
 async def process_fav_rem(callback: CallbackQuery):
     purchase_number = callback.data.replace("fav_rem_", "")
     await remove_favorite(callback.from_user.id, purchase_number)
-
+    
     await callback.answer("🗑 Удалено из избранного")
-
+    
     fav_text = "⭐️ В избранное"
     fav_callback = f"fav_add_{purchase_number}"
-
+    
     original_markup = callback.message.reply_markup
     new_inline_keyboard = []
     for row in original_markup.inline_keyboard:
@@ -238,19 +236,17 @@ async def process_fav_rem(callback: CallbackQuery):
             else:
                 new_row.append(btn)
         new_inline_keyboard.append(new_row)
-
+        
     await callback.message.edit_reply_markup(
         reply_markup=InlineKeyboardMarkup(inline_keyboard=new_inline_keyboard)
     )
 
 
-# === Просмотр избранного ===
-
 @router.message(Command("favorites"))
 @router.message(F.text == "⭐️ Избранное")
 async def show_favorites(message: Message):
     favs = await get_favorites(message.from_user.id)
-
+    
     if not favs:
         await message.answer(
             "⭐️ <b>Ваш список избранного пуст.</b>\n\n"
@@ -259,12 +255,12 @@ async def show_favorites(message: Message):
             reply_markup=main_keyboard()
         )
         return
-
+        
     await message.answer(
         f"⭐️ <b>Ваши избранные закупки ({len(favs)}):</b>",
         parse_mode=ParseMode.HTML
     )
-
+    
     for f in favs:
         price_str = f"{f.price:,.2f} ₽".replace(",", " ") if f.price else "Не указана"
         text = (
@@ -273,14 +269,14 @@ async def show_favorites(message: Message):
             f"🏢 <b>Заказчик:</b> {f.customer[:150] if f.customer else '-'}\n"
             f"💰 <b>Цена:</b> {price_str}\n"
         )
-
+        
         buttons = []
         if f.url:
             buttons.append(InlineKeyboardButton(text="🔗 Сайт", url=f.url))
         buttons.append(InlineKeyboardButton(text="🗑 Удалить", callback_data=f"fav_rem_{f.purchase_number}"))
-
+        
         markup = InlineKeyboardMarkup(inline_keyboard=[buttons])
-
+        
         await message.answer(
             text,
             parse_mode=ParseMode.HTML,
@@ -289,7 +285,7 @@ async def show_favorites(message: Message):
         await asyncio.sleep(0.2)
 
 
-# === Создание фильтра по шагам (FSM) ===
+# === Создание фильтра (FSM) ===
 
 @router.message(Command("add_filter"))
 @router.message(F.text == "➕ Добавить фильтр")
@@ -687,7 +683,7 @@ async def settings(message: Message):
     await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
 
 
-# === Регистрация официального меню бота в Telegram ===
+# === Регистрация меню в Telegram ===
 
 async def set_bot_commands(bot: Bot):
     commands = [
@@ -705,22 +701,17 @@ async def set_bot_commands(bot: Bot):
 async def main():
     await init_db()
 
-    # Настраиваем увеличенный таймаут для работы в РФ
-    from aiogram.client.session.aiohttp import AiohttpSession
-    from aiohttp import ClientTimeout
+    # Принудительно отключаем IPv6, заставляя aiohttp работать строго через IPv4
+    connector = aiohttp.TCPConnector(family=socket.AF_INET)
+    timeout = ClientTimeout(total=60, connect=15)
+    session = AiohttpSession(connector=connector, timeout=timeout)
 
-    # Увеличиваем время ожидания до 60 секунд (вместо стандартных 10-20)
-    timeout = ClientTimeout(total=60, connect=15, sock_read=30)
-    session = AiohttpSession(timeout=timeout)
-
-    # Инициализация бота с новой сессией
     bot = Bot(token=BOT_TOKEN, session=session)
     
-    # Устанавливаем встроенное меню
     try:
         await set_bot_commands(bot)
     except Exception as e:
-        logger.error(f"Не удалось установить команды меню: {e}")
+        logger.error(f"Не удалось установить меню команд: {e}")
 
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
@@ -734,9 +725,17 @@ async def main():
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        # Запускаем бота, игнорируя старые ошибки сети при старте
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await checker.stop()
         await bot.session.close()
+
+
+if __name__ == "__main__":
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
         logger.info("Бот остановлен.")
