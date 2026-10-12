@@ -2,7 +2,6 @@ import aiohttp
 import asyncio
 import re
 import socket
-import ssl
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -30,24 +29,16 @@ class Purchase:
 
 
 class ZakupkiParser:
-    """Парсер для zakupki.gov.ru с поддержкой больших таймаутов и заголовков Chrome"""
+    """Оптимизированный парсер для быстрого получения данных с zakupki.gov.ru"""
 
     BASE_URL = "https://zakupki.gov.ru"
     SEARCH_URL = f"{BASE_URL}/epz/order/extendedsearch/results.html"
 
-    # Полноценные заголовки современного браузера Chrome
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Sec-Ch-Ua": '"Not-A.Brand";v="99", "Chromium";v="124", "Google Chrome";v="124"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
+        "Connection": "keep-alive",
     }
 
     REGION_CODES = {
@@ -71,8 +62,7 @@ class ZakupkiParser:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
-            # Увеличиваем время ожидания ответа от закупков до 60 секунд
-            timeout = aiohttp.ClientTimeout(total=60, connect=25, sock_read=45)
+            timeout = aiohttp.ClientTimeout(total=35, connect=15)
             
             connector = aiohttp.TCPConnector(
                 family=socket.AF_INET,
@@ -91,7 +81,6 @@ class ZakupkiParser:
             await self.session.close()
 
     async def _fetch_page(self, url: str, params: list, retries: int = 2) -> str:
-        """Безопасный запрос с повторными попытками при торможении сайта"""
         for attempt in range(1, retries + 1):
             try:
                 session = await self._get_session()
@@ -99,11 +88,11 @@ class ZakupkiParser:
                     if response.status == 200:
                         return await response.text()
                     else:
-                        logger.warning(f"Статус ответа {response.status} на попытке {attempt}")
+                        logger.warning(f"Статус ответа {response.status} на странице (попытка {attempt})")
             except Exception as e:
-                logger.warning(f"Попытка {attempt}/{retries} не удалась ({type(e).__name__}). Повтор...")
+                logger.warning(f"Попытка {attempt}/{retries} не удалась ({type(e).__name__})...")
                 if attempt < retries:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(1.5)
         return ""
 
     async def search_purchases(
@@ -120,9 +109,9 @@ class ZakupkiParser:
         page: int = 1,
     ) -> list[Purchase]:
         purchases_dict = {}
-        max_pages = 50
+        max_pages = 25  # 25 страниц по 20 лотов = до 500 лотов за прогон (быстро и без лагов)
 
-        logger.info(f"Запуск глубокого парсинга (до {max_pages} страниц)...")
+        logger.info(f"Запуск легкого парсинга (до {max_pages} страниц)...")
 
         for current_page in range(1, max_pages + 1):
             params = self._build_search_params(
@@ -143,20 +132,20 @@ class ZakupkiParser:
                 page_items = self._parse_search_results(html)
 
                 if not page_items:
-                    logger.info(f"Достигнут конец выдачи на странице {current_page - 1}.")
+                    logger.info(f"Конец выдачи на странице {current_page - 1}.")
                     break
 
                 for item in page_items:
                     if item.number not in purchases_dict:
                         purchases_dict[item.number] = item
 
-                if current_page % 10 == 0:
-                    logger.info(f"Обработано страниц: {current_page}/{max_pages}, собрано лотов: {len(purchases_dict)}")
+                if current_page % 5 == 0:
+                    logger.info(f"Просканировано страниц: {current_page}/{max_pages}, собрано лотов: {len(purchases_dict)}")
 
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(0.2)
 
             except Exception as e:
-                logger.error(f"Ошибка при обработке страницы {current_page}: {type(e).__name__} - {e}")
+                logger.error(f"Ошибка на странице {current_page}: {type(e).__name__} - {e}")
                 break
 
         logger.info(f"Итого просканировано и проанализировано уникальных лотов: {len(purchases_dict)}")
@@ -178,7 +167,7 @@ class ZakupkiParser:
             ("search-filter", "Дате размещения"),
             ("pageNumber", str(page)),
             ("sortDirection", "false"),
-            ("recordsPerPage", "_50"),
+            ("recordsPerPage", "_20"),  # Быстрый режим: 20 лотов на страницу вместо 50
             ("showLotsInfoHidden", "false"),
             ("sortBy", "UPDATE_DATE"),
             ("af", "on"),
