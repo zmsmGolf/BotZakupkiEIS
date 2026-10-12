@@ -1,6 +1,8 @@
 import aiohttp
 import asyncio
 import re
+import socket
+import ssl
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -28,7 +30,7 @@ class Purchase:
 
 
 class ZakupkiParser:
-    """Парсер для zakupki.gov.ru с поддержкой глубокого сканирования до 50 страниц"""
+    """Парсер для zakupki.gov.ru с поддержкой сертификатов Минцифры РФ"""
 
     BASE_URL = "https://zakupki.gov.ru"
     SEARCH_URL = f"{BASE_URL}/epz/order/extendedsearch/results.html"
@@ -44,7 +46,6 @@ class ZakupkiParser:
         "Connection": "keep-alive",
     }
 
-    # Коды регионов Дальнего Востока
     REGION_CODES = {
         "хабаровский": "5243009",
         "хабаровск": "5243009",
@@ -66,10 +67,20 @@ class ZakupkiParser:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=60)
+            # Настройка быстрого таймаута (15 секунд вместо 60)
+            timeout = aiohttp.ClientTimeout(total=15, connect=8)
+            
+            # Отключение проверки SSL-сертификатов для обхода блокировки Минцифры РФ
+            connector = aiohttp.TCPConnector(
+                family=socket.AF_INET,
+                ssl=False,
+                verify_ssl=False
+            )
+            
             self.session = aiohttp.ClientSession(
                 headers=self.HEADERS,
-                timeout=timeout
+                timeout=timeout,
+                connector=connector
             )
         return self.session
 
@@ -78,19 +89,18 @@ class ZakupkiParser:
             await self.session.close()
 
     async def search_purchases(
-            self,
-            keywords: str = "",
-            exclude_keywords: str = "",
-            min_price: float = None,
-            max_price: float = None,
-            regions: list[str] = None,
-            customer_name: str = "",
-            law_type: str = "",
-            okpd2_codes: list[str] = None,
-            days_back: int = 30,
-            page: int = 1,
+        self,
+        keywords: str = "",
+        exclude_keywords: str = "",
+        min_price: float = None,
+        max_price: float = None,
+        regions: list[str] = None,
+        customer_name: str = "",
+        law_type: str = "",
+        okpd2_codes: list[str] = None,
+        days_back: int = 30,
+        page: int = 1,
     ) -> list[Purchase]:
-        """Глубокий сбор: сканирует до 50 страниц (до 2500 закупок за один прогон)"""
         purchases_dict = {}
         max_pages = 50
 
@@ -108,15 +118,15 @@ class ZakupkiParser:
 
             try:
                 session = await self._get_session()
-                async with session.get(self.SEARCH_URL, params=params) as response:
+                # Передаем ssl=False при каждом запросе
+                async with session.get(self.SEARCH_URL, params=params, ssl=False) as response:
                     if response.status != 200:
-                        logger.warning(f"Страница {current_page}: статус {response.status}, прерывание цикла.")
+                        logger.warning(f"Страница {current_page}: статус {response.status}, прерывание.")
                         break
 
                     html = await response.text()
                     page_items = self._parse_search_results(html)
 
-                    # Если страница пустая — дошли до конца выдачи
                     if not page_items:
                         logger.info(f"Достигнут конец выдачи на странице {current_page - 1}.")
                         break
@@ -125,30 +135,28 @@ class ZakupkiParser:
                         if item.number not in purchases_dict:
                             purchases_dict[item.number] = item
 
-                # Вывод прогресса каждые 10 страниц
                 if current_page % 10 == 0:
                     logger.info(f"Обработано страниц: {current_page}/{max_pages}, собрано лотов: {len(purchases_dict)}")
 
-                # Небольшая пауза для защиты от капчи и блокировки IP
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.2)
 
             except Exception as e:
-                logger.error(f"Ошибка при обработке страницы {current_page}: {e}")
+                logger.error(f"Ошибка при обработке страницы {current_page}: {type(e).__name__} - {e}")
                 break
 
         logger.info(f"Итого просканировано и проанализировано уникальных лотов: {len(purchases_dict)}")
         return list(purchases_dict.values())
 
     def _build_search_params(
-            self,
-            min_price: float = None,
-            max_price: float = None,
-            regions: list[str] = None,
-            customer_name: str = "",
-            law_type: str = "",
-            page: int = 1,
+        self,
+        min_price: float = None,
+        max_price: float = None,
+        regions: list[str] = None,
+        customer_name: str = "",
+        law_type: str = "",
+        page: int = 1,
     ) -> List[Tuple[str, str]]:
-
+        
         params = [
             ("searchString", ""),
             ("morphology", "on"),
@@ -158,10 +166,9 @@ class ZakupkiParser:
             ("recordsPerPage", "_50"),
             ("showLotsInfoHidden", "false"),
             ("sortBy", "UPDATE_DATE"),
-            ("af", "on"),  # Только активный этап подачи заявок
+            ("af", "on"),
         ]
 
-        # Закон
         if law_type == "44":
             params.append(("fz44", "on"))
         elif law_type == "223":
@@ -170,13 +177,11 @@ class ZakupkiParser:
             params.append(("fz44", "on"))
             params.append(("fz223", "on"))
 
-        # Фильтр цены
         if min_price is not None:
             params.append(("priceFromGeneral", str(int(min_price))))
         if max_price is not None:
             params.append(("priceToGeneral", str(int(max_price))))
 
-        # Коды регионов
         if regions:
             added_codes = set()
             for reg in regions:
@@ -251,7 +256,6 @@ class ZakupkiParser:
             except ValueError:
                 price = 0.0
 
-        # Поиск даты окончания подачи заявок
         end_date = None
         dates_blocks = block.find_all("div", class_="data-block")
         for db in dates_blocks:
