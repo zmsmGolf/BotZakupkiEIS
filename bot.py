@@ -705,12 +705,22 @@ async def set_bot_commands(bot: Bot):
 async def main():
     await init_db()
 
-    # Прямое подключение без локального прокси (готово для хостинга Bothost / VPS)
+    # Настраиваем увеличенный таймаут для работы в РФ
+    from aiogram.client.session.aiohttp import AiohttpSession
+    from aiohttp import ClientTimeout
 
-    bot = Bot(token=BOT_TOKEN)
+    # Увеличиваем время ожидания до 60 секунд (вместо стандартных 10-20)
+    timeout = ClientTimeout(total=60, connect=15, sock_read=30)
+    session = AiohttpSession(timeout=timeout)
 
+    # Инициализация бота с новой сессией
+    bot = Bot(token=BOT_TOKEN, session=session)
+    
     # Устанавливаем встроенное меню
-    await set_bot_commands(bot)
+    try:
+        await set_bot_commands(bot)
+    except Exception as e:
+        logger.error(f"Не удалось установить команды меню: {e}")
 
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
@@ -724,17 +734,9 @@ async def main():
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
+        # Запускаем бота, игнорируя старые ошибки сети при старте
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         await checker.stop()
         await bot.session.close()
-
-
-if __name__ == "__main__":
-    if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
         logger.info("Бот остановлен.")
