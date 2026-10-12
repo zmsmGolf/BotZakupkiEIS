@@ -2,7 +2,6 @@ import aiohttp
 import asyncio
 import re
 import socket
-import ssl
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -30,7 +29,7 @@ class Purchase:
 
 
 class ZakupkiParser:
-    """Парсер для zakupki.gov.ru с поддержкой сертификатов Минцифры РФ"""
+    """Парсер для zakupki.gov.ru с поддержкой обхода SSL-сертификатов РФ"""
 
     BASE_URL = "https://zakupki.gov.ru"
     SEARCH_URL = f"{BASE_URL}/epz/order/extendedsearch/results.html"
@@ -67,14 +66,12 @@ class ZakupkiParser:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
-            # Настройка быстрого таймаута (15 секунд вместо 60)
-            timeout = aiohttp.ClientTimeout(total=15, connect=8)
+            timeout = aiohttp.ClientTimeout(total=20, connect=10)
             
-            # Отключение проверки SSL-сертификатов для обхода блокировки Минцифры РФ
+            # Чистое отключение проверки SSL без конфликтующих параметров
             connector = aiohttp.TCPConnector(
                 family=socket.AF_INET,
-                ssl=False,
-                verify_ssl=False
+                ssl=False
             )
             
             self.session = aiohttp.ClientSession(
@@ -118,8 +115,7 @@ class ZakupkiParser:
 
             try:
                 session = await self._get_session()
-                # Передаем ssl=False при каждом запросе
-                async with session.get(self.SEARCH_URL, params=params, ssl=False) as response:
+                async with session.get(self.SEARCH_URL, params=params) as response:
                     if response.status != 200:
                         logger.warning(f"Страница {current_page}: статус {response.status}, прерывание.")
                         break
