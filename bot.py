@@ -699,6 +699,7 @@ async def set_bot_commands(bot: Bot):
 # === Main ===
 
 async def main():
+    print("!!! ПРОЦЕСС ЗАПУСКА БОТА НАЧАТ !!!") 
     await init_db()
 
     # Принудительно отключаем IPv6, заставляя aiohttp работать строго через IPv4
