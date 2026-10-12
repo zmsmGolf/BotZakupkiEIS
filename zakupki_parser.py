@@ -29,16 +29,19 @@ class Purchase:
 
 
 class ZakupkiParser:
-    """Оптимизированный парсер для быстрого получения данных с zakupki.gov.ru"""
+    """Оптимизированный парсер с поддержкой куки-сессии для обхода WAF zakupki.gov.ru"""
 
     BASE_URL = "https://zakupki.gov.ru"
+    MAIN_SEARCH_PAGE = f"{BASE_URL}/epz/order/extendedsearch/search.html"
     SEARCH_URL = f"{BASE_URL}/epz/order/extendedsearch/results.html"
 
     HEADERS = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8",
+        "Referer": "https://zakupki.gov.ru/epz/order/extendedsearch/search.html",
         "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
     }
 
     REGION_CODES = {
@@ -59,38 +62,59 @@ class ZakupkiParser:
 
     def __init__(self):
         self.session: Optional[aiohttp.ClientSession] = None
+        self._cookies_initialized = False
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=35, connect=15)
-            
+            timeout = aiohttp.ClientTimeout(total=20, connect=10)
             connector = aiohttp.TCPConnector(
                 family=socket.AF_INET,
                 ssl=False
             )
-            
+            # Включаем сохранение куки сессии
+            jar = aiohttp.CookieJar(unsafe=True)
             self.session = aiohttp.ClientSession(
                 headers=self.HEADERS,
                 timeout=timeout,
-                connector=connector
+                connector=connector,
+                cookie_jar=jar
             )
+            self._cookies_initialized = False
         return self.session
 
     async def close(self):
         if self.session and not self.session.closed:
             await self.session.close()
 
-    async def _fetch_page(self, url: str, params: list, retries: int = 2) -> str:
+    async def _ensure_cookies(self):
+        """Заходит на главную страницу поиска, чтобы получить валидные JSESSIONID куки"""
+        if self._cookies_initialized:
+            return
+
+        session = await self._get_session()
+        try:
+            logger.info("Получение стартовых куки от zakupki.gov.ru...")
+            async with session.get(self.MAIN_SEARCH_PAGE) as resp:
+                if resp.status == 200:
+                    self._cookies_initialized = True
+                    logger.info("Куки сессии успешно получены!")
+                else:
+                    logger.warning(f"Стартовая страница вернула статус {resp.status}")
+        except Exception as e:
+            logger.warning(f"Не удалось предварительно загрузить куки: {e}")
+
+    async def _fetch_page(self, params: list, retries: int = 3) -> str:
+        await self._ensure_cookies()
+        session = await self._get_session()
+
         for attempt in range(1, retries + 1):
             try:
-                session = await self._get_session()
-                async with session.get(url, params=params) as response:
+                async with session.get(self.SEARCH_URL, params=params) as response:
                     if response.status == 200:
                         return await response.text()
-                    else:
-                        logger.warning(f"Статус ответа {response.status} на странице (попытка {attempt})")
+                    logger.warning(f"Статус {response.status} на попытке {attempt}")
             except Exception as e:
-                logger.warning(f"Попытка {attempt}/{retries} не удалась ({type(e).__name__})...")
+                logger.warning(f"Попытка {attempt}/{retries} завершилась с ошибкой ({type(e).__name__})")
                 if attempt < retries:
                     await asyncio.sleep(1.5)
         return ""
@@ -109,9 +133,9 @@ class ZakupkiParser:
         page: int = 1,
     ) -> list[Purchase]:
         purchases_dict = {}
-        max_pages = 25  # 25 страниц по 20 лотов = до 500 лотов за прогон (быстро и без лагов)
+        max_pages = 20  # 20 страниц по 20 лотов = до 400 лотов
 
-        logger.info(f"Запуск легкого парсинга (до {max_pages} страниц)...")
+        logger.info(f"Запуск сканирования (до {max_pages} страниц)...")
 
         for current_page in range(1, max_pages + 1):
             params = self._build_search_params(
@@ -124,15 +148,15 @@ class ZakupkiParser:
             )
 
             try:
-                html = await self._fetch_page(self.SEARCH_URL, params)
+                html = await self._fetch_page(params)
                 if not html:
-                    logger.warning(f"Не удалось получить страницу {current_page}. Завершение сканирования.")
+                    logger.warning(f"Страница {current_page} не получена. Прерывание.")
                     break
 
                 page_items = self._parse_search_results(html)
 
                 if not page_items:
-                    logger.info(f"Конец выдачи на странице {current_page - 1}.")
+                    logger.info(f"Выдача завершена на странице {current_page - 1}.")
                     break
 
                 for item in page_items:
@@ -140,12 +164,12 @@ class ZakupkiParser:
                         purchases_dict[item.number] = item
 
                 if current_page % 5 == 0:
-                    logger.info(f"Просканировано страниц: {current_page}/{max_pages}, собрано лотов: {len(purchases_dict)}")
+                    logger.info(f"Обработано страниц: {current_page}/{max_pages}, найдено лотов: {len(purchases_dict)}")
 
                 await asyncio.sleep(0.2)
 
             except Exception as e:
-                logger.error(f"Ошибка на странице {current_page}: {type(e).__name__} - {e}")
+                logger.error(f"Ошибка на странице {current_page}: {e}")
                 break
 
         logger.info(f"Итого просканировано и проанализировано уникальных лотов: {len(purchases_dict)}")
@@ -167,7 +191,7 @@ class ZakupkiParser:
             ("search-filter", "Дате размещения"),
             ("pageNumber", str(page)),
             ("sortDirection", "false"),
-            ("recordsPerPage", "_20"),  # Быстрый режим: 20 лотов на страницу вместо 50
+            ("recordsPerPage", "_20"),
             ("showLotsInfoHidden", "false"),
             ("sortBy", "UPDATE_DATE"),
             ("af", "on"),
