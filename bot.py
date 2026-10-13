@@ -33,10 +33,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# === Оптимизированная сессия с IPv4 и стабильными таймаутами ===
+# === Оптимизированная сессия IPv4 ===
 
 class IPv4AiohttpSession(AiohttpSession):
-    """Специальная сессия aiogram для надежной работы на серверах в РФ"""
+    """Специальная сессия aiogram для работы через IPv4"""
     async def create_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
@@ -145,7 +145,7 @@ def filter_actions_keyboard(filter_id: int) -> InlineKeyboardMarkup:
     )
 
 
-# === Общие команды и отмена ===
+# === Общие команды ===
 
 @router.message(F.text == "❌ Отмена")
 @router.message(Command("cancel"))
@@ -299,7 +299,7 @@ async def show_favorites(message: Message):
         await asyncio.sleep(0.2)
 
 
-# === Создание фильтра (FSM) ===
+# === Создание фильтра ===
 
 @router.message(Command("add_filter"))
 @router.message(F.text == "➕ Добавить фильтр")
@@ -720,8 +720,8 @@ async def main():
         logger.error("Токен бота не найден!")
         return
 
-    # Безопасная инициализация сессии с таймаутом 45 секунд
-    session = IPv4AiohttpSession(timeout=45.0)
+    # Обычная чистая сессия с IPv4 и официальным API
+    session = IPv4AiohttpSession(timeout=30.0)
     bot = Bot(token=BOT_TOKEN, session=session)
 
     try:
@@ -742,18 +742,24 @@ async def main():
         print("🚀🚀🚀 БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ! 🚀🚀🚀")
         logger.info("Бот запущен и готов к работе!")
 
-        # Безопасный сброс вебхука с обходом ошибок сети
+        # Подавляем любые потенциальные сетевые сбои вебхука
         try:
             await bot.delete_webhook(drop_pending_updates=True)
         except Exception as e:
-            logger.warning(f"Пропущен delete_webhook: {e}")
+            logger.warning(f"Игнорируем ошибку delete_webhook: {e}")
 
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
     finally:
         if "purchase_checker" in bot.__dict__:
-            await bot.__dict__["purchase_checker"].stop()
-        await bot.session.close()
+            try:
+                await bot.__dict__["purchase_checker"].stop()
+            except Exception:
+                pass
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
