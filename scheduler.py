@@ -57,13 +57,20 @@ class PurchaseChecker:
 
     async def stop(self):
         if self._running:
-            self.scheduler.shutdown(wait=False)
-            await self.parser.close()
+            try:
+                self.scheduler.shutdown(wait=False)
+            except Exception:
+                pass
+            if hasattr(self.parser, "close"):
+                try:
+                    await self.parser.close()
+                except Exception:
+                    pass
             self._running = False
             logger.info("Планировщик остановлен")
 
     async def check_all_users(self):
-        logger.info("Начинаем автоматическую проверку (глубина 50 страниц / 2500 лотов)...")
+        logger.info("Начинаем автоматическую проверку закупок...")
         try:
             users = await get_all_active_users()
             for user in users:
@@ -123,7 +130,7 @@ class PurchaseChecker:
                                 sent_count += 1
                                 await asyncio.sleep(0.35)
 
-                                if sent_count >= 100:
+                                if sent_count >= 50:
                                     break
 
                             except Exception as e:
@@ -183,7 +190,7 @@ class PurchaseChecker:
                             total_sent += 1
                             await asyncio.sleep(0.35)
 
-                            if total_sent >= 100:
+                            if total_sent >= 50:
                                 return total_sent
                         except Exception as e:
                             logger.error(f"Ошибка отправки: {e}")
