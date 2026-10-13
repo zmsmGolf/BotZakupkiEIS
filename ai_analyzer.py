@@ -17,13 +17,13 @@ async def analyze_purchase_with_ai(title: str, customer: str = "", price: float 
     # Считываем ключ динамически прямо в момент запроса
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     
-    if not api_key or "AIza" not in api_key:
+    if not api_key:
         return (
-            "⚠️ <b>Ключ Gemini API не настроен в Bothost.ru!</b>\n\n"
-            "Добавьте переменную <code>GEMINI_API_KEY</code> со значением вашего ключа в панели хостинга."
+            "⚠️ <b>Ключ Gemini API не найден!</b>\n\n"
+            "Добавьте переменную <code>GEMINI_API_KEY</code> в панели Bothost.ru."
         )
 
-    # Динамическое формирование URL
+    # Динамическое формирование URL (теперь принимает любые ключи)
     gemini_url = f"{CF_PROXY_URL}/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
 
     price_str = f"{price:,.2f} ₽".replace(",", " ") if price > 0 else "Не указана"
@@ -63,7 +63,7 @@ async def analyze_purchase_with_ai(title: str, customer: str = "", price: float 
                 else:
                     err_msg = await resp.text()
                     logger.error(f"Gemini API Error {resp.status}: {err_msg}")
-                    return f"❌ Ошибка ИИ (Код {resp.status}). Проверьте API-ключ."
+                    return f"❌ Ошибка ИИ (Код {resp.status}). Проверьте баланс или ключ."
     except Exception as e:
         logger.error(f"Gemini Exception: {e}")
-        return "❌ Ошибка связи с ИИ-сервисом."
+        return "❌ Ошибка соединения с ИИ-сервисом."
