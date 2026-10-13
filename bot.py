@@ -40,7 +40,7 @@ CUSTOM_TG_API = TelegramAPIServer.from_base(CF_WORKER_URL)
 
 
 class IPv4AiohttpSession(AiohttpSession):
-    """Специальная сессия aiogram для надежной работы через Cloudflare"""
+    """Специальная сессия aiogram для работы в РФ через Cloudflare"""
     def __init__(self, timeout: float = 35.0):
         super().__init__(api=CUSTOM_TG_API, timeout=timeout)
 
@@ -303,7 +303,7 @@ async def show_favorites(message: Message):
         await asyncio.sleep(0.2)
 
 
-# === Создание фильтра ===
+# === Создание фильтра (FSM) ===
 
 @router.message(Command("add_filter"))
 @router.message(F.text == "➕ Добавить фильтр")
@@ -321,7 +321,8 @@ async def start_add_filter(message: Message, state: FSMContext):
 
 @router.message(AddFilterStates.name)
 async def process_filter_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text.strip())
+    text_val = message.text.strip() if message.text else "Без названия"
+    await state.update_data(name=text_val)
     await state.set_state(AddFilterStates.keywords)
     await message.answer(
         "🔍 Шаг 2/8: Введите <b>ключевые слова</b> для поиска через запятую\n\n"
@@ -346,7 +347,8 @@ async def skip_keywords(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AddFilterStates.keywords)
 async def process_keywords(message: Message, state: FSMContext):
-    await state.update_data(keywords=message.text.strip())
+    kw_text = message.text.strip() if message.text else None
+    await state.update_data(keywords=kw_text)
     await state.set_state(AddFilterStates.exclude_keywords)
     await message.answer(
         "🚫 Шаг 3/8: Введите <b>исключающие слова</b> через запятую\n\n"
@@ -371,7 +373,8 @@ async def skip_exclude(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AddFilterStates.exclude_keywords)
 async def process_exclude(message: Message, state: FSMContext):
-    await state.update_data(exclude_keywords=message.text.strip())
+    ex_text = message.text.strip() if message.text else None
+    await state.update_data(exclude_keywords=ex_text)
     await state.set_state(AddFilterStates.min_price)
     await message.answer(
         "💰 Шаг 4/8: Введите <b>минимальную цену</b> (в рублях)\n\n"
@@ -397,8 +400,11 @@ async def skip_min_price(callback: CallbackQuery, state: FSMContext):
 @router.message(AddFilterStates.min_price)
 async def process_min_price(message: Message, state: FSMContext):
     try:
-        price = float(message.text.strip().replace(" ", "").replace(",", "."))
-        await state.update_data(min_price=price)
+        if message.text:
+            price = float(message.text.strip().replace(" ", "").replace(",", "."))
+            await state.update_data(min_price=price)
+        else:
+            await state.update_data(min_price=None)
     except ValueError:
         await message.answer("❌ Введите число. Например: 50000")
         return
@@ -428,8 +434,11 @@ async def skip_max_price(callback: CallbackQuery, state: FSMContext):
 @router.message(AddFilterStates.max_price)
 async def process_max_price(message: Message, state: FSMContext):
     try:
-        price = float(message.text.strip().replace(" ", "").replace(",", "."))
-        await state.update_data(max_price=price)
+        if message.text:
+            price = float(message.text.strip().replace(" ", "").replace(",", "."))
+            await state.update_data(max_price=price)
+        else:
+            await state.update_data(max_price=None)
     except ValueError:
         await message.answer("❌ Введите число. Например: 15000000")
         return
@@ -457,7 +466,8 @@ async def skip_regions(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AddFilterStates.regions)
 async def process_regions(message: Message, state: FSMContext):
-    await state.update_data(regions=message.text.strip())
+    reg_text = message.text.strip() if message.text else None
+    await state.update_data(regions=reg_text)
     await state.set_state(AddFilterStates.law_type)
     await message.answer(
         "📜 Шаг 7/8: Выберите <b>тип закона</b>",
@@ -492,7 +502,8 @@ async def skip_okpd2(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AddFilterStates.okpd2)
 async def process_okpd2(message: Message, state: FSMContext):
-    await state.update_data(okpd2_codes=message.text.strip())
+    ok_text = message.text.strip() if message.text else None
+    await state.update_data(okpd2_codes=ok_text)
     await show_filter_summary(message, state)
 
 
@@ -504,7 +515,7 @@ async def show_filter_summary(message: Message, state: FSMContext):
     summary += f"📌 Название: <b>{data.get('name', '-')}</b>\n"
 
     if data.get("keywords"):
-        summary += f"🔍 Ключевые слова: {data['keywords']}\n"
+        summary += f"🔍 Ключевые слова: {data['keywords'][:150]}...\n"
     if data.get("exclude_keywords"):
         summary += f"🚫 Исключения: {data['exclude_keywords']}\n"
     if data.get("min_price") is not None:
@@ -645,7 +656,7 @@ async def start_quick_search(message: Message, state: FSMContext):
 
 @router.message(QuickSearchStates.query)
 async def process_quick_search(message: Message, state: FSMContext):
-    query = message.text.strip()
+    query = message.text.strip() if message.text else ""
     await state.clear()
 
     status_msg = await message.answer(f"🔍 Ищу закупки по запросу «{query}»...", reply_markup=main_keyboard())
@@ -700,6 +711,23 @@ async def settings(message: Message):
     await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
 
 
+# === ГЛОБАЛЬНЫЙ ЗАЩИТНЫЙ ОБРАБОТЧИК ОШИБОК ===
+
+@router.error()
+async def global_error_handler(event, exception):
+    logger.error(f"Перехвачена ошибка в обработчике: {exception}", exc_info=True)
+    if hasattr(event, "message") and event.message:
+        try:
+            await event.message.answer(
+                "⚠️ Произошла небольшая заминка при обработке данных.\n"
+                "Пожалуйста, продолжите ввод или нажмите /start.",
+                reply_markup=main_keyboard()
+            )
+        except Exception:
+            pass
+    return True
+
+
 # === Регистрация меню в Telegram ===
 
 async def set_bot_commands(bot: Bot):
@@ -720,7 +748,7 @@ async def main():
     await init_db()
 
     if not BOT_TOKEN or "ВАШ_ТОКЕН" in BOT_TOKEN:
-        print("❌ ОШИБКА: Токен бота не найден в переменных окружения!")
+        print("❌ ОШИБКА: Токен бота не найден!")
         logger.error("Токен бота не найден!")
         return
 
@@ -730,7 +758,7 @@ async def main():
     try:
         try:
             await set_bot_commands(bot)
-            print("✅ Официальное меню команд Telegram установлено!")
+            print("✅ Меню команд Telegram установлено!")
         except Exception as e:
             logger.warning(f"Пропущена установка меню команд: {e}")
 
