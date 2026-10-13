@@ -3,29 +3,28 @@ import aiohttp
 import logging
 from dotenv import load_dotenv
 
+# Принудительная загрузка переменных
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-# Ссылка на ваш воркер (без слеша в конце)
+# Ссылка на ваш воркер (БЕЗ слэша в конце)
 CF_PROXY_URL = "https://my-tg-proxy.zretsky.workers.dev"
 GROQ_URL = f"{CF_PROXY_URL}/openai/v1/chat/completions"
 
 async def analyze_purchase_with_ai(title: str, customer: str = "", price: float = 0.0, law_type: str = "", region: str = "") -> str:
-    """Бесплатный ИИ-анализ через Groq и Cloudflare"""
+    """Бесплатный ИИ-анализ через Groq в Стелс-режиме"""
     
-    # Ключ берется ТОЛЬКО из переменных Bothost.ru
+    # Берем ключ из переменных окружения
     api_key = os.getenv("GROQ_API_KEY", "").strip()
 
     if not api_key or "gsk_" not in api_key:
-        return "⚠️ ОШИБКА: НОВЫЙ ключ GROQ_API_KEY не найден в панели Bothost.ru."
-
-    price_str = f"{price:,.2f} ₽".replace(",", " ") if price > 0 else "Не указана"
+        return "⚠️ ОШИБКА: НОВЫЙ ключ GROQ_API_KEY не найден в переменных Bothost.ru."
 
     prompt = (
         f"Ты эксперт по тендерам РФ. Проанализируй закупку:\n"
         f"Объект: {title}\n"
         f"Заказчик: {customer}\n"
-        f"Цена: {price_str}\n"
+        f"Цена: {price:,.2f} руб.\n"
         f"Закон: {law_type}\n"
         f"Регион: {region}\n\n"
         f"Напиши кратко:\n"
@@ -44,8 +43,7 @@ async def analyze_purchase_with_ai(title: str, customer: str = "", price: float 
 
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "User-Agent": "Mozilla/5.0"
+        "Content-Type": "application/json"
     }
 
     try:
@@ -56,7 +54,7 @@ async def analyze_purchase_with_ai(title: str, customer: str = "", price: float 
                     return data["choices"][0]["message"]["content"]
                 else:
                     err_text = await resp.text()
-                    logger.error(f"Groq Error {resp.status}: {err_text}")
+                    logger.error(f"Groq Stealth Error {resp.status}: {err_text}")
                     return f"❌ Ошибка ИИ (Код {resp.status}). Проверьте НОВЫЙ ключ в Bothost."
     except Exception as e:
         logger.error(f"Groq Connection Error: {e}")
