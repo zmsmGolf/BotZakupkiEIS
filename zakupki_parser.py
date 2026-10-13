@@ -75,7 +75,7 @@ class ZakupkiParser:
         return self.session
 
     async def close(self):
-        """Обязательный метод закрытия сессии"""
+        """Закрытие сессии"""
         if self.session and not self.session.closed:
             try:
                 await self.session.close()
@@ -89,7 +89,7 @@ class ZakupkiParser:
                 async with session.get(self.SEARCH_URL, params=params) as response:
                     if response.status == 200:
                         return await response.text()
-            except Exception as e:
+            except Exception:
                 if attempt < retries:
                     await asyncio.sleep(1.5)
         return ""
@@ -142,6 +142,7 @@ class ZakupkiParser:
                 logger.error(f"Ошибка на странице {current_page}: {e}")
                 break
 
+        logger.info(f"Итого просканировано и проанализировано уникальных лотов: {len(purchases_dict)}")
         return list(purchases_dict.values())
 
     def _build_search_params(
@@ -299,6 +300,3 @@ class ZakupkiParser:
             end_date=end_date,
             url=url or f"https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber={number}",
         )
-
-            return Purchase(number=number, title=title, price=price, url=url, end_date=end_date)
-        except: return None
