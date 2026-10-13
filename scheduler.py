@@ -21,17 +21,22 @@ logger = logging.getLogger(__name__)
 
 
 async def get_purchase_markup(telegram_id: int, purchase: Purchase) -> InlineKeyboardMarkup:
-    """Создает клавиатуру со ссылкой и кнопкой 'В избранное'"""
+    """Создает клавиатуру со ссылкой, кнопкой 'В избранное' и 'ИИ-Анализ'"""
     is_fav = await is_favorite(telegram_id, purchase.number)
     fav_text = "❤️ В избранном" if is_fav else "⭐️ В избранное"
     fav_callback = f"fav_rem_{purchase.number}" if is_fav else f"fav_add_{purchase.number}"
 
-    buttons = []
+    row1 = []
     if purchase.url:
-        buttons.append(InlineKeyboardButton(text="🔗 Сайт", url=purchase.url))
-    buttons.append(InlineKeyboardButton(text=fav_text, callback_data=fav_callback))
+        row1.append(InlineKeyboardButton(text="🔗 Сайт", url=purchase.url))
+    row1.append(InlineKeyboardButton(text=fav_text, callback_data=fav_callback))
 
-    return InlineKeyboardMarkup(inline_keyboard=[buttons])
+    # Вторая строчка с кнопкой ИИ-Анализа
+    row2 = [
+        InlineKeyboardButton(text="🧠 ИИ-Анализ ТЗ", callback_data=f"ai_analyze_{purchase.number}")
+    ]
+
+    return InlineKeyboardMarkup(inline_keyboard=[row1, row2])
 
 
 class PurchaseChecker:
