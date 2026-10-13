@@ -2,6 +2,8 @@ import asyncio
 import logging
 import sys
 import os
+import socket
+import aiohttp
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -29,6 +31,21 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+# === Пользовательская сессия для AIOGRAM 3.X с принудительным IPv4 ===
+
+class IPv4AiohttpSession(AiohttpSession):
+    """Сессия aiogram, заставляющая сетевой стек работать строго через IPv4"""
+    async def create_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
+            self._session = aiohttp.ClientSession(
+                connector=connector,
+                json_serialize=self.json_dumps,
+                timeout=aiohttp.ClientTimeout(total=self.timeout),
+            )
+        return self._session
 
 
 # === Состояния FSM ===
@@ -695,7 +712,7 @@ async def set_bot_commands(bot: Bot):
 # === Main ===
 
 async def main():
-    print("!!! ЗАПУСК В МОСКВЕ !!!")
+    print("!!! ЗАПУСК В МОСКВЕ МУЛЬТИ-ПОТОК !!!")
     await init_db()
 
     if not BOT_TOKEN or "ВАШ_ТОКЕН" in BOT_TOKEN:
@@ -705,8 +722,8 @@ async def main():
     else:
         print(f"✅ Токен успешно загружен")
 
-    # Инициализация сессии aiogram 3.x с таймаутом 60 секунд
-    session = AiohttpSession(timeout=60.0)
+    # Сессия aiogram 3.x с включенным IPv4 селектором
+    session = IPv4AiohttpSession(timeout=35.0)
     bot = Bot(token=BOT_TOKEN, session=session)
     
     try:
