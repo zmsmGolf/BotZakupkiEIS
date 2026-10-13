@@ -4,30 +4,32 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-CF_PROXY_URL = "https://my-tg-proxy.zretsky.workers.dev"
+# СИЛОВОЙ МЕТОД: Если хостинг не видит переменные, берем ключ напрямую из кода
+# Вставьте ваш ключ AIzaSy... между кавычками ниже:
+GEMINI_API_KEY = "ВАШ_КЛЮЧ_ОТ_GOOGLE" 
 
-# Эндпоинт для Gemini через ваш Cloudflare
+CF_PROXY_URL = "https://my-tg-proxy.zretsky.workers.dev"
 GEMINI_URL = f"{CF_PROXY_URL}/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
 
 async def analyze_purchase_with_ai(title: str, customer: str = "", price: float = 0.0, law_type: str = "", region: str = "") -> str:
     """Бесплатный ИИ-анализ закупки через Google Gemini"""
     
+    # Проверка ключа
     if not GEMINI_API_KEY or "AIza" not in GEMINI_API_KEY:
-        return "⚠️ ОШИБКА: GEMINI_API_KEY не настроен в панели Bothost.ru."
+        return "❌ ОШИБКА: Ключ не вставлен в файл ai_analyzer.py. Отредактируйте файл на GitHub."
 
     price_str = f"{price:,.2f} ₽".replace(",", " ") if price > 0 else "Не указана"
 
     prompt = (
-        f"Ты эксперт по тендерам РФ. Проанализируй закупку:\n"
-        f"Наименование: {title}\n"
+        f"Ты эксперт по тендерам РФ. Сделай краткий анализ лота:\n"
+        f"Объект: {title}\n"
         f"Заказчик: {customer}\n"
         f"Цена: {price_str}\n"
         f"Закон: {law_type}\n"
         f"Регион: {region}\n\n"
         f"Напиши кратко:\n"
         f"1. 📋 Суть (что купить/сделать)\n"
-        f"2. 📦 Ключевые потребности\n"
+        f"2. 📦 Основные требования\n"
         f"3. 💰 Оценка лота\n"
         f"4. ⚠️ Главные риски\n"
         f"Отвечай на русском языке, используй эмодзи."
@@ -42,14 +44,11 @@ async def analyze_purchase_with_ai(title: str, customer: str = "", price: float 
             async with session.post(GEMINI_URL, json=payload, timeout=25) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    try:
-                        return data['candidates'][0]['content']['parts'][0]['text']
-                    except (KeyError, IndexError):
-                        return "❌ Ошибка структуры ответа от нейросети."
+                    return data['candidates'][0]['content']['parts'][0]['text']
                 else:
                     err_msg = await resp.text()
                     logger.error(f"Gemini API Error {resp.status}: {err_msg}")
-                    return f"❌ Ошибка ИИ (Код {resp.status}). Проверьте API-ключ."
+                    return f"❌ Ошибка ИИ (Код {resp.status}). Проверьте ваш API-ключ."
     except Exception as e:
         logger.error(f"Gemini Exception: {e}")
-        return "❌ Ошибка связи с ИИ-сервисом."
+        return "❌ Ошибка связи с ИИ-аналитиком."
