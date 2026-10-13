@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 # СИЛОВОЙ МЕТОД: Если хостинг не видит переменные, берем ключ напрямую из кода
 # Вставьте ваш ключ AIzaSy... между кавычками ниже:
-GEMINI_API_KEY = "ВАШ_КЛЮЧ_ОТ_GOOGLE" 
+GEMINI_API_KEY = "AQ.Ab8RN6Kk9ukwcLiEOaT0p5NW7Z7_ymNN0_bSQ4wIxuUZeJR77A" 
 
 CF_PROXY_URL = "https://my-tg-proxy.zretsky.workers.dev"
 GEMINI_URL = f"{CF_PROXY_URL}/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
