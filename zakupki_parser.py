@@ -77,7 +77,10 @@ class ZakupkiParser:
     async def close(self):
         """Обязательный метод закрытия сессии"""
         if self.session and not self.session.closed:
-            await self.session.close()
+            try:
+                await self.session.close()
+            except Exception:
+                pass
 
     async def _fetch_page(self, params: list, retries: int = 2) -> str:
         for attempt in range(1, retries + 1):
@@ -86,9 +89,7 @@ class ZakupkiParser:
                 async with session.get(self.SEARCH_URL, params=params) as response:
                     if response.status == 200:
                         return await response.text()
-                    logger.warning(f"Статус {response.status} на странице (попытка {attempt})")
             except Exception as e:
-                logger.warning(f"Попытка {attempt}/{retries} завершилась с ошибкой ({type(e).__name__})")
                 if attempt < retries:
                     await asyncio.sleep(1.5)
         return ""
@@ -135,16 +136,12 @@ class ZakupkiParser:
                     if item.number not in purchases_dict:
                         purchases_dict[item.number] = item
 
-                if current_page % 5 == 0:
-                    logger.info(f"Обработано страниц: {current_page}/{max_pages}, найдено лотов: {len(purchases_dict)}")
-
                 await asyncio.sleep(0.2)
 
             except Exception as e:
                 logger.error(f"Ошибка на странице {current_page}: {e}")
                 break
 
-        logger.info(f"Итого просканировано и проанализировано уникальных лотов: {len(purchases_dict)}")
         return list(purchases_dict.values())
 
     def _build_search_params(
@@ -209,8 +206,7 @@ class ZakupkiParser:
                 purchase = self._parse_purchase_block(block)
                 if purchase:
                     purchases.append(purchase)
-            except Exception as e:
-                logger.error(f"Ошибка парсинга блока: {e}")
+            except Exception:
                 continue
 
         return purchases
