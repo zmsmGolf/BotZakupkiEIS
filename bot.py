@@ -15,7 +15,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.enums import ParseMode
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.client.telegram import TelegramAPIServer
 
 from config import BOT_TOKEN
 from database import (
@@ -34,10 +33,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# === Пользовательская сессия для работы в РФ через IPv4 ===
+# === Оптимизированная сессия с IPv4 и стабильными таймаутами ===
 
 class IPv4AiohttpSession(AiohttpSession):
-    """Специальная сессия aiogram для стабильной работы в дата-центрах РФ"""
+    """Специальная сессия aiogram для надежной работы на серверах в РФ"""
     async def create_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
@@ -47,10 +46,6 @@ class IPv4AiohttpSession(AiohttpSession):
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
             )
         return self._session
-
-
-# Использование проверенного зеркала Telegram API в РФ для обхода таймаутов
-TELEGRAM_MIRROR = TelegramAPIServer.from_base('https://telegg.ru')
 
 
 # === Состояния FSM ===
@@ -717,18 +712,16 @@ async def set_bot_commands(bot: Bot):
 # === Main ===
 
 async def main():
-    print("!!! ЗАПУСК БОТА ЧЕРЕЗ ЗЕРКАЛО МИНЦИФРЫ !!!")
+    print("!!! ЗАПУСК БОТА В МОСКВЕ !!!")
     await init_db()
 
     if not BOT_TOKEN or "ВАШ_ТОКЕН" in BOT_TOKEN:
         print("❌ ОШИБКА: Токен бота не найден в переменных окружения!")
         logger.error("Токен бота не найден!")
         return
-    else:
-        print("✅ Токен успешно загружен")
 
-    # Сессия aiogram 3.x с использованием зеркал Telegram в РФ
-    session = IPv4AiohttpSession(api=TELEGRAM_MIRROR, timeout=30.0)
+    # Безопасная инициализация сессии с таймаутом 45 секунд
+    session = IPv4AiohttpSession(timeout=45.0)
     bot = Bot(token=BOT_TOKEN, session=session)
 
     try:
@@ -749,8 +742,14 @@ async def main():
         print("🚀🚀🚀 БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ! 🚀🚀🚀")
         logger.info("Бот запущен и готов к работе!")
 
-        await bot.delete_webhook(drop_pending_updates=True)
+        # Безопасный сброс вебхука с обходом ошибок сети
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+        except Exception as e:
+            logger.warning(f"Пропущен delete_webhook: {e}")
+
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+
     finally:
         if "purchase_checker" in bot.__dict__:
             await bot.__dict__["purchase_checker"].stop()
