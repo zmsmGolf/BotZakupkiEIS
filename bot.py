@@ -34,10 +34,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# === Пользовательская сессия для AIOGRAM 3.X (IPv4 + Custom TCPConnector) ===
+# === Пользовательская сессия для работы в РФ через IPv4 ===
 
 class IPv4AiohttpSession(AiohttpSession):
-    """Специальная сессия для работы в дата-центрах РФ"""
+    """Специальная сессия aiogram для стабильной работы в дата-центрах РФ"""
     async def create_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             connector = aiohttp.TCPConnector(family=socket.AF_INET, ssl=False)
@@ -49,8 +49,8 @@ class IPv4AiohttpSession(AiohttpSession):
         return self._session
 
 
-# Зеркало API Telegram для обхода таймаутов в дата-центрах РФ
-CUSTOM_API = TelegramAPIServer.from_base('https://api.telegram-proxy.org')
+# Использование проверенного зеркала Telegram API в РФ для обхода таймаутов
+TELEGRAM_MIRROR = TelegramAPIServer.from_base('https://telegg.ru')
 
 
 # === Состояния FSM ===
@@ -717,7 +717,7 @@ async def set_bot_commands(bot: Bot):
 # === Main ===
 
 async def main():
-    print("!!! ЗАПУСК ЧЕРЕЗ ЗЕРКАЛО В МОСКВЕ !!!")
+    print("!!! ЗАПУСК БОТА ЧЕРЕЗ ЗЕРКАЛО МИНЦИФРЫ !!!")
     await init_db()
 
     if not BOT_TOKEN or "ВАШ_ТОКЕН" in BOT_TOKEN:
@@ -727,32 +727,33 @@ async def main():
     else:
         print("✅ Токен успешно загружен")
 
-    # Безопасная инициализация сессии с зеркалом Telegram
-    session = IPv4AiohttpSession(api=CUSTOM_API, timeout=30.0)
+    # Сессия aiogram 3.x с использованием зеркал Telegram в РФ
+    session = IPv4AiohttpSession(api=TELEGRAM_MIRROR, timeout=30.0)
     bot = Bot(token=BOT_TOKEN, session=session)
-    
-    try:
-        await set_bot_commands(bot)
-        print("✅ Официальное меню команд Telegram установлено!")
-    except Exception as e:
-        logger.error(f"Игнорируем ошибку установки меню: {e}")
-
-    storage = MemoryStorage()
-    dp = Dispatcher(storage=storage)
-    dp.include_router(router)
-
-    checker = PurchaseChecker(bot)
-    bot.__dict__["purchase_checker"] = checker
-    await checker.start()
-
-    print("🚀🚀🚀 БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ! 🚀🚀🚀")
-    logger.info("Бот запущен и готов к работе!")
 
     try:
+        try:
+            await set_bot_commands(bot)
+            print("✅ Официальное меню команд Telegram установлено!")
+        except Exception as e:
+            logger.warning(f"Пропущена установка меню команд: {e}")
+
+        storage = MemoryStorage()
+        dp = Dispatcher(storage=storage)
+        dp.include_router(router)
+
+        checker = PurchaseChecker(bot)
+        bot.__dict__["purchase_checker"] = checker
+        await checker.start()
+
+        print("🚀🚀🚀 БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ! 🚀🚀🚀")
+        logger.info("Бот запущен и готов к работе!")
+
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        await checker.stop()
+        if "purchase_checker" in bot.__dict__:
+            await bot.__dict__["purchase_checker"].stop()
         await bot.session.close()
 
 
@@ -764,6 +765,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Бот остановлен.")
-
-if __name__ == "__main__":
-    asyncio.run(main())
