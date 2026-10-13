@@ -7,12 +7,14 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Официальный прямой эндпоинт Groq AI (OpenAI-совместимый)
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+# Ссылка на ваш Cloudflare воркер
+CF_PROXY_URL = "https://my-tg-proxy.zretsky.workers.dev"
+# Путь через воркер к API Groq
+GROQ_URL = f"{CF_PROXY_URL}/openai/v1/chat/completions"
 
 
 async def analyze_purchase_with_ai(title: str, customer: str = "", price: float = 0.0, law_type: str = "", region: str = "") -> str:
-    """Мгновенный бесплатный ИИ-анализ закупки через Groq AI (Llama 3.3 70B / DeepSeek)"""
+    """Бесплатный ИИ-анализ через Groq и Cloudflare воркер (обход 403)"""
     
     api_key = (
         os.environ.get("GROQ_API_KEY") or 
@@ -20,38 +22,32 @@ async def analyze_purchase_with_ai(title: str, customer: str = "", price: float 
         ""
     ).strip()
 
-    if not api_key or "gsk_" not in api_key:
-        return (
-            "⚠️ <b>Ключ Groq API не настроен!</b>\n\n"
-            "Добавьте переменную <code>GROQ_API_KEY</code> со значением ключа (начинается на <code>gsk_...</code>) в панели Bothost.ru."
-        )
+    if not api_key:
+        return "⚠️ Ключ GROQ_API_KEY не найден в панели Bothost.ru."
 
     price_str = f"{price:,.2f} ₽".replace(",", " ") if price > 0 else "Не указана"
 
     prompt = (
-        f"Ты опытный тендерный специалист и эксперт по госзакупкам РФ (44-ФЗ и 223-ФЗ).\n"
-        f"Проанализируй закупку:\n"
-        f"• Наименование: {title}\n"
+        f"Ты опытный тендерный специалист РФ. Проанализируй закупку:\n"
+        f"• Объект: {title}\n"
         f"• Заказчик: {customer}\n"
         f"• Цена: {price_str}\n"
         f"• Закон: {law_type}\n"
         f"• Регион: {region}\n\n"
-        f"Сделай структурированную, четкую выжимку для поставщика/подрядчика:\n"
-        f"1. 📋 Суть закупки (что конкретно требуется купить/сделать простыми словами)\n"
-        f"2. 📦 Ключевые позиции и объемы\n"
-        f"3. 💰 Оценка привлекательности лота (сложность, маржинальность, аванс)\n"
-        f"4. ⚠️ Главные риски (документы, лицензии, сертификаты, жесткие сроки, штрафы)\n\n"
-        f"Отвечай коротко, по делу, с эмодзи на русском языке."
+        f"Напиши кратко по пунктам:\n"
+        f"1. 📋 Суть (что нужно сделать/поставить)\n"
+        f"2. 📦 Ключевые требования\n"
+        f"3. 💰 Оценка привлекательности\n"
+        f"4. ⚠️ Главные риски\n"
+        f"Отвечай на русском языке, используй эмодзи."
     )
 
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [
-            {"role": "system", "content": "Ты ведущий эксперт по тендерам РФ."},
             {"role": "user", "content": prompt}
         ],
-        "temperature": 0.2,
-        "max_tokens": 900
+        "temperature": 0.2
     }
 
     headers = {
@@ -61,14 +57,14 @@ async def analyze_purchase_with_ai(title: str, customer: str = "", price: float 
 
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(GROQ_URL, json=payload, headers=headers, timeout=20) as resp:
+            async with session.post(GROQ_URL, json=payload, headers=headers, timeout=25) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     return data["choices"][0]["message"]["content"]
                 else:
                     err_text = await resp.text()
                     logger.error(f"Groq API Error {resp.status}: {err_text}")
-                    return f"❌ Ошибка ИИ (Код {resp.status}). Проверьте GROQ_API_KEY."
+                    return f"❌ Ошибка ИИ (Код {resp.status})."
     except Exception as e:
         logger.error(f"Groq Connection Error: {e}")
-        return "❌ Не удалось связаться с ИИ-сервисом."
+        return "❌ Ошибка связи с ИИ через мост."
