@@ -29,7 +29,7 @@ class Purchase:
 
 
 class ZakupkiParser:
-    """Парсер для zakupki.gov.ru с глубиной сканирования до 30 страниц (600 лотов)"""
+    """Парсер для zakupki.gov.ru (Поддержка всех 11 регионов ДФО)"""
 
     BASE_URL = "https://zakupki.gov.ru"
     SEARCH_URL = f"{BASE_URL}/epz/order/extendedsearch/results.html"
@@ -41,6 +41,7 @@ class ZakupkiParser:
         "Connection": "keep-alive",
     }
 
+    # Полный список кодов регионов Дальнего Востока (11 субъектов ДФО)
     REGION_CODES = {
         "хабаровский": "5243009",
         "хабаровск": "5243009",
@@ -54,7 +55,20 @@ class ZakupkiParser:
         "сахалин": "5243021",
         "южно-сахалинск": "5243021",
         "амурская": "5243002",
+        "благовещенск": "5243002",
         "забайкальский": "5243007",
+        "чита": "5243007",
+        "бурятия": "5243003",
+        "улан-удэ": "5243003",
+        "саха": "5243014",
+        "якутия": "5243014",
+        "якутск": "5243014",
+        "магаданская": "5243013",
+        "магадан": "5243013",
+        "камчатский": "5243011",
+        "петропавловск": "5243011",
+        "чукотский": "5243025",
+        "анадырь": "5243025",
     }
 
     def __init__(self):
@@ -62,7 +76,7 @@ class ZakupkiParser:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
-            timeout = aiohttp.ClientTimeout(total=30, connect=10)
+            timeout = aiohttp.ClientTimeout(total=25, connect=10)
             connector = aiohttp.TCPConnector(
                 family=socket.AF_INET,
                 ssl=False
@@ -108,9 +122,9 @@ class ZakupkiParser:
         page: int = 1,
     ) -> list[Purchase]:
         purchases_dict = {}
-        max_pages = 30  # Установлено 30 страниц (до 600 лотов)
+        max_pages = 30
 
-        logger.info(f"Запуск глубокого парсинга (до {max_pages} страниц)...")
+        logger.info(f"Запуск сканирования (до {max_pages} страниц)...")
 
         for current_page in range(1, max_pages + 1):
             params = self._build_search_params(
@@ -130,15 +144,11 @@ class ZakupkiParser:
                 page_items = self._parse_search_results(html)
 
                 if not page_items:
-                    logger.info(f"Выдача завершена на странице {current_page - 1}.")
                     break
 
                 for item in page_items:
                     if item.number not in purchases_dict:
                         purchases_dict[item.number] = item
-
-                if current_page % 10 == 0:
-                    logger.info(f"Просканировано страниц: {current_page}/{max_pages}, найдено лотов: {len(purchases_dict)}")
 
                 await asyncio.sleep(0.2)
 
