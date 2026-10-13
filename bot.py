@@ -727,7 +727,7 @@ async def main():
 
     # Обычная чистая сессия с IPv4 и официальным API
     session = IPv4AiohttpSession(timeout=30.0)
-    bot = Bot(token=BOT_TOKEN, session=session)
+    bot = Bot(token=BOT_TOKEN, session=session, api=CUSTOM_TG_API)
 
     try:
         try:
