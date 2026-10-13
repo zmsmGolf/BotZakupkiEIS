@@ -22,12 +22,11 @@ from config import BOT_TOKEN
 from database import (
     init_db, get_or_create_user, add_filter, get_user_filters,
     delete_filter, add_favorite, remove_favorite, get_favorites,
-    cache_purchase, get_cached_purchase_by_number,
+    cache_purchase,
 )
 from filters_manager import format_filter_info, format_purchase
 from scheduler import PurchaseChecker, get_purchase_markup
 from zakupki_parser import ZakupkiParser
-from ai_analyzer import analyze_purchase_with_ai
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,11 +35,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# === Настройка моста Cloudflare только для Telegram ===
 CF_WORKER_URL = "https://my-tg-proxy.zretsky.workers.dev"
 CUSTOM_TG_API = TelegramAPIServer.from_base(CF_WORKER_URL)
 
 
 class IPv4AiohttpSession(AiohttpSession):
+    """Специальная сессия aiogram для надежной связи с Telegram из РФ"""
     def __init__(self, timeout: float = 35.0):
         super().__init__(api=CUSTOM_TG_API, timeout=timeout)
 
@@ -54,6 +55,8 @@ class IPv4AiohttpSession(AiohttpSession):
             )
         return self._session
 
+
+# === Состояния FSM ===
 
 class AddFilterStates(StatesGroup):
     name = State()
@@ -73,6 +76,8 @@ class QuickSearchStates(StatesGroup):
 
 router = Router()
 
+
+# === Клавиатуры ===
 
 def main_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
@@ -96,12 +101,17 @@ def main_keyboard() -> ReplyKeyboardMarkup:
 
 
 def cancel_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
+    keyboard = [
+        [KeyboardButton(text="❌ Отмена")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
 def skip_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="⏭ Пропустить этот шаг", callback_data="skip")]]
+        inline_keyboard=[
+            [InlineKeyboardButton(text="⏭ Пропустить этот шаг", callback_data="skip")]
+        ]
     )
 
 
@@ -143,23 +153,39 @@ def filter_actions_keyboard(filter_id: int) -> InlineKeyboardMarkup:
     )
 
 
+# === Общие команды и отмена ===
+
 @router.message(F.text == "❌ Отмена")
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer("❌ Действие отменено. Возвращаюсь в главное меню.", reply_markup=main_keyboard())
+    await message.answer(
+        "❌ Действие отменено. Возвращаюсь в главное меню.",
+        reply_markup=main_keyboard()
+    )
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    await get_or_create_user(message.from_user.id, message.from_user.username)
+    await get_or_create_user(
+        message.from_user.id, message.from_user.username
+    )
+
     welcome_text = (
         f"👋 Привет, {message.from_user.first_name}!\n\n"
         f"Я бот для мониторинга закупок на <b>zakupki.gov.ru</b>\n\n"
+        f"🔹 <b>Используйте кнопки внизу для управления:</b>\n"
+        f"• <b>➕ Добавить фильтр</b> — подбор закупок по вашим темам\n"
+        f"• <b>🔄 Проверить сейчас</b> — мгновенный запуск поиска\n"
+        f"• <b>🔎 Быстрый поиск</b> — разгрузка результатов по запросу\n"
+        f"• <b>⭐️ Избранное</b> — ваши сохраненные лоты\n\n"
         f"📌 Все действия доступны по кнопкам ниже!"
     )
-    await message.answer(welcome_text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
+
+    await message.answer(
+        welcome_text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard()
+    )
 
 
 @router.message(Command("help"))
@@ -167,38 +193,16 @@ async def cmd_start(message: Message, state: FSMContext):
 async def cmd_help(message: Message):
     help_text = (
         "📖 <b>Справка по боту</b>\n\n"
-        "🧠 <b>ИИ-Анализ ТЗ:</b>\n"
-        "Нажмите кнопку «🧠 ИИ-Анализ ТЗ» под любой закупкой, и нейросеть подготовит выжимку по рискам, требованиям и условиям за 3 секунды!"
+        "<b>Кнопки меню:</b>\n"
+        "➕ <b>Добавить фильтр</b> — создать новый фильтр с ключевыми словами, ценами и регионами\n"
+        "🔍 <b>Мои фильтры</b> — просмотреть и удалить имеющиеся фильтры\n"
+        "🔄 <b>Проверить сейчас</b> — запустить мгновенную проверку по вашим фильтрам\n"
+        "🔎 <b>Быстрый поиск</b> — найти закупки по любому слову прямо сейчас\n"
+        "⭐️ <b>Избранное</b> — список сохраненных вами закупок\n\n"
+        "⭐ <b>Избранное:</b>\n"
+        "Жмите кнопку «⭐️ В избранное» под любой найденной закупкой, чтобы сохранить её в личный кабинет!"
     )
     await message.answer(help_text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
-
-
-# === ОБРАБОТЧИК ИИ-АНАЛИЗА ===
-
-@router.callback_query(F.data.startswith("ai_analyze_"))
-async def process_ai_analyze(callback: CallbackQuery):
-    purchase_number = callback.data.replace("ai_analyze_", "")
-    
-    await callback.answer("🧠 ИИ анализирует ТЗ... Подождите 3-5 секунд.", show_alert=False)
-    
-    status_msg = await callback.message.reply("⏳ <b>ИИ сканирует документы и условия закупки...</b>", parse_mode=ParseMode.HTML)
-    
-    cached = await get_cached_purchase_by_number(purchase_number)
-    if cached:
-        title = cached.title or "Без названия"
-        customer = cached.customer or ""
-        price = cached.price or 0.0
-        law = cached.law_type or ""
-        region = cached.region or ""
-    else:
-        title = f"Закупка №{purchase_number}"
-        customer, price, law, region = "", 0.0, "", ""
-
-    ai_result = await analyze_purchase_with_ai(title=title, customer=customer, price=price, law_type=law, region=region)
-    
-    out_text = f"🧠 <b>ИИ-АНАЛИЗ ЗАКУПКИ №<code>{purchase_number}</code></b>\n━━━━━━━━━━━━━━━━━━━━━━\n\n{ai_result}"
-    
-    await status_msg.edit_text(out_text, parse_mode=ParseMode.HTML)
 
 
 # === Избранное ===
@@ -207,10 +211,12 @@ async def process_ai_analyze(callback: CallbackQuery):
 async def process_fav_add(callback: CallbackQuery):
     purchase_number = callback.data.replace("fav_add_", "")
     success = await add_favorite(callback.from_user.id, purchase_number)
+    
     if success:
         await callback.answer("⭐ Закупка добавлена в избранное!")
         fav_text = "❤️ В избранном"
         fav_callback = f"fav_rem_{purchase_number}"
+        
         original_markup = callback.message.reply_markup
         new_inline_keyboard = []
         for row in original_markup.inline_keyboard:
@@ -221,18 +227,24 @@ async def process_fav_add(callback: CallbackQuery):
                 else:
                     new_row.append(btn)
             new_inline_keyboard.append(new_row)
-        await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=new_inline_keyboard))
+            
+        await callback.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=new_inline_keyboard)
+        )
     else:
-        await callback.answer("❌ Ошибка добавления", show_alert=True)
+        await callback.answer("❌ Не удалось добавить в избранное", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("fav_rem_"))
 async def process_fav_rem(callback: CallbackQuery):
     purchase_number = callback.data.replace("fav_rem_", "")
     await remove_favorite(callback.from_user.id, purchase_number)
+    
     await callback.answer("🗑 Удалено из избранного")
+    
     fav_text = "⭐️ В избранное"
     fav_callback = f"fav_add_{purchase_number}"
+    
     original_markup = callback.message.reply_markup
     new_inline_keyboard = []
     for row in original_markup.inline_keyboard:
@@ -243,26 +255,52 @@ async def process_fav_rem(callback: CallbackQuery):
             else:
                 new_row.append(btn)
         new_inline_keyboard.append(new_row)
-    await callback.message.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=new_inline_keyboard))
+        
+    await callback.message.edit_reply_markup(
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=new_inline_keyboard)
+    )
 
 
 @router.message(Command("favorites"))
 @router.message(F.text == "⭐️ Избранное")
 async def show_favorites(message: Message):
     favs = await get_favorites(message.from_user.id)
+    
     if not favs:
-        await message.answer("⭐️ Ваш список избранного пуст.", parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
+        await message.answer(
+            "⭐️ <b>Ваш список избранного пуст.</b>\n\n"
+            "Жмите «⭐️ В избранное» под присланными закупками, чтобы сохранить их сюда.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_keyboard()
+        )
         return
-    await message.answer(f"⭐️ <b>Ваши избранные закупки ({len(favs)}):</b>", parse_mode=ParseMode.HTML)
+        
+    await message.answer(
+        f"⭐️ <b>Ваши избранные закупки ({len(favs)}):</b>",
+        parse_mode=ParseMode.HTML
+    )
+    
     for f in favs:
         price_str = f"{f.price:,.2f} ₽".replace(",", " ") if f.price else "Не указана"
-        text = f"📋 <b>Номер:</b> <code>{f.purchase_number}</code>\n📝 <b>Название:</b> {html.escape(f.title[:200])}...\n💰 <b>Цена:</b> {price_str}\n"
+        text = (
+            f"📋 <b>Номер:</b> <code>{f.purchase_number}</code>\n"
+            f"📝 <b>Название:</b> {html.escape(f.title[:200])}...\n"
+            f"🏢 <b>Заказчик:</b> {html.escape(f.customer[:150]) if f.customer else '-'}\n"
+            f"💰 <b>Цена:</b> {price_str}\n"
+        )
+        
         buttons = []
         if f.url:
             buttons.append(InlineKeyboardButton(text="🔗 Сайт", url=f.url))
         buttons.append(InlineKeyboardButton(text="🗑 Удалить", callback_data=f"fav_rem_{f.purchase_number}"))
-        markup = InlineKeyboardMarkup(inline_keyboard=[buttons, [InlineKeyboardButton(text="🧠 ИИ-Анализ ТЗ", callback_data=f"ai_analyze_{f.purchase_number}")]])
-        await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+        
+        markup = InlineKeyboardMarkup(inline_keyboard=[buttons])
+        
+        await message.answer(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=markup,
+        )
         await asyncio.sleep(0.2)
 
 
@@ -273,108 +311,186 @@ async def show_favorites(message: Message):
 async def start_add_filter(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(AddFilterStates.name)
-    await message.answer("📌 Шаг 1/8: Введите <b>название</b> фильтра", parse_mode=ParseMode.HTML, reply_markup=cancel_keyboard())
+    await message.answer(
+        "📌 <b>Создание нового фильтра</b>\n\n"
+        "Шаг 1/8: Введите <b>название</b> фильтра\n"
+        "(например: «Поставки ДВ» или «Работы ХК»)",
+        parse_mode=ParseMode.HTML,
+        reply_markup=cancel_keyboard(),
+    )
 
 
 @router.message(AddFilterStates.name)
 async def process_filter_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text.strip())
+    text_val = message.text.strip() if message.text else "Без названия"
+    await state.update_data(name=text_val)
     await state.set_state(AddFilterStates.keywords)
-    await message.answer("🔍 Шаг 2/8: Введите <b>ключевые слова</b> через запятую:", parse_mode=ParseMode.HTML, reply_markup=skip_keyboard())
+    await message.answer(
+        "🔍 Шаг 2/8: Введите <b>ключевые слова</b> для поиска через запятую\n\n"
+        "Пример: сантехника, насосы, труба, краска",
+        parse_mode=ParseMode.HTML,
+        reply_markup=skip_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "skip", AddFilterStates.keywords)
 async def skip_keywords(callback: CallbackQuery, state: FSMContext):
     await state.update_data(keywords=None)
     await state.set_state(AddFilterStates.exclude_keywords)
-    await callback.message.edit_text("🚫 Шаг 3/8: Введите <b>исключающие слова</b>:", parse_mode=ParseMode.HTML, reply_markup=skip_keyboard())
+    await callback.message.edit_text(
+        "🚫 Шаг 3/8: Введите <b>исключающие слова</b> через запятую\n\n"
+        "Пример: ремонт, обслуживание",
+        parse_mode=ParseMode.HTML,
+        reply_markup=skip_keyboard(),
+    )
     await callback.answer()
 
 
 @router.message(AddFilterStates.keywords)
 async def process_keywords(message: Message, state: FSMContext):
-    await state.update_data(keywords=message.text.strip())
+    kw_text = message.text.strip() if message.text else None
+    await state.update_data(keywords=kw_text)
     await state.set_state(AddFilterStates.exclude_keywords)
-    await message.answer("🚫 Шаг 3/8: Введите <b>исключающие слова</b>:", parse_mode=ParseMode.HTML, reply_markup=skip_keyboard())
+    await message.answer(
+        "🚫 Шаг 3/8: Введите <b>исключающие слова</b> через запятую\n\n"
+        "Пример: ремонт, обслуживание",
+        parse_mode=ParseMode.HTML,
+        reply_markup=skip_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "skip", AddFilterStates.exclude_keywords)
 async def skip_exclude(callback: CallbackQuery, state: FSMContext):
     await state.update_data(exclude_keywords=None)
     await state.set_state(AddFilterStates.min_price)
-    await callback.message.edit_text("💰 Шаг 4/8: Введите <b>минимальную цену</b>:", parse_mode=ParseMode.HTML, reply_markup=skip_keyboard())
+    await callback.message.edit_text(
+        "💰 Шаг 4/8: Введите <b>минимальную цену</b> (в рублях)\n\n"
+        "Пример: 50000",
+        parse_mode=ParseMode.HTML,
+        reply_markup=skip_keyboard(),
+    )
     await callback.answer()
 
 
 @router.message(AddFilterStates.exclude_keywords)
 async def process_exclude(message: Message, state: FSMContext):
-    await state.update_data(exclude_keywords=message.text.strip())
+    ex_text = message.text.strip() if message.text else None
+    await state.update_data(exclude_keywords=ex_text)
     await state.set_state(AddFilterStates.min_price)
-    await message.answer("💰 Шаг 4/8: Введите <b>минимальную цену</b>:", parse_mode=ParseMode.HTML, reply_markup=skip_keyboard())
+    await message.answer(
+        "💰 Шаг 4/8: Введите <b>минимальную цену</b> (в рублях)\n\n"
+        "Пример: 50000",
+        parse_mode=ParseMode.HTML,
+        reply_markup=skip_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "skip", AddFilterStates.min_price)
 async def skip_min_price(callback: CallbackQuery, state: FSMContext):
     await state.update_data(min_price=None)
     await state.set_state(AddFilterStates.max_price)
-    await callback.message.edit_text("💰 Шаг 5/8: Введите <b>максимальную цену</b>:", parse_mode=ParseMode.HTML, reply_markup=skip_keyboard())
+    await callback.message.edit_text(
+        "💰 Шаг 5/8: Введите <b>максимальную цену</b> (в рублях)\n\n"
+        "Пример: 15000000",
+        parse_mode=ParseMode.HTML,
+        reply_markup=skip_keyboard(),
+    )
     await callback.answer()
 
 
 @router.message(AddFilterStates.min_price)
 async def process_min_price(message: Message, state: FSMContext):
     try:
-        price = float(message.text.strip().replace(" ", "").replace(",", "."))
-        await state.update_data(min_price=price)
+        if message.text:
+            price = float(message.text.strip().replace(" ", "").replace(",", "."))
+            await state.update_data(min_price=price)
+        else:
+            await state.update_data(min_price=None)
     except ValueError:
-        await message.answer("❌ Введите число.")
+        await message.answer("❌ Введите число. Например: 50000")
         return
+
     await state.set_state(AddFilterStates.max_price)
-    await message.answer("💰 Шаг 5/8: Введите <b>максимальную цену</b>:", parse_mode=ParseMode.HTML, reply_markup=skip_keyboard())
+    await message.answer(
+        "💰 Шаг 5/8: Введите <b>максимальную цену</b> (в рублях)\n\n"
+        "Пример: 15000000",
+        parse_mode=ParseMode.HTML,
+        reply_markup=skip_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "skip", AddFilterStates.max_price)
 async def skip_max_price(callback: CallbackQuery, state: FSMContext):
     await state.update_data(max_price=None)
     await state.set_state(AddFilterStates.regions)
-    await callback.message.edit_text("📍 Шаг 6/8: Введите <b>регион(ы)</b>:", parse_mode=ParseMode.HTML, reply_markup=skip_keyboard())
+    await callback.message.edit_text(
+        "📍 Шаг 6/8: Введите <b>регион(ы)</b> через запятую\n\n"
+        "Пример: Хабаровский край, Приморский край, ЕАО, Сахалин",
+        parse_mode=ParseMode.HTML,
+        reply_markup=skip_keyboard(),
+    )
     await callback.answer()
 
 
 @router.message(AddFilterStates.max_price)
 async def process_max_price(message: Message, state: FSMContext):
     try:
-        price = float(message.text.strip().replace(" ", "").replace(",", "."))
-        await state.update_data(max_price=price)
+        if message.text:
+            price = float(message.text.strip().replace(" ", "").replace(",", "."))
+            await state.update_data(max_price=price)
+        else:
+            await state.update_data(max_price=None)
     except ValueError:
-        await message.answer("❌ Введите число.")
+        await message.answer("❌ Введите число. Например: 15000000")
         return
+
     await state.set_state(AddFilterStates.regions)
-    await message.answer("📍 Шаг 6/8: Введите <b>регион(ы)</b>:", parse_mode=ParseMode.HTML, reply_markup=skip_keyboard())
+    await message.answer(
+        "📍 Шаг 6/8: Введите <b>регион(ы)</b> через запятую\n\n"
+        "Пример: Хабаровский край, Приморский край, ЕАО, Сахалин",
+        parse_mode=ParseMode.HTML,
+        reply_markup=skip_keyboard(),
+    )
 
 
 @router.callback_query(F.data == "skip", AddFilterStates.regions)
 async def skip_regions(callback: CallbackQuery, state: FSMContext):
     await state.update_data(regions=None)
     await state.set_state(AddFilterStates.law_type)
-    await callback.message.edit_text("📜 Шаг 7/8: Выберите <b>тип закона</b>", parse_mode=ParseMode.HTML, reply_markup=law_type_keyboard())
+    await callback.message.edit_text(
+        "📜 Шаг 7/8: Выберите <b>тип закона</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=law_type_keyboard(),
+    )
     await callback.answer()
 
 
 @router.message(AddFilterStates.regions)
 async def process_regions(message: Message, state: FSMContext):
-    await state.update_data(regions=message.text.strip())
+    reg_text = message.text.strip() if message.text else None
+    await state.update_data(regions=reg_text)
     await state.set_state(AddFilterStates.law_type)
-    await message.answer("📜 Шаг 7/8: Выберите <b>тип закона</b>", parse_mode=ParseMode.HTML, reply_markup=law_type_keyboard())
+    await message.answer(
+        "📜 Шаг 7/8: Выберите <b>тип закона</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=law_type_keyboard(),
+    )
 
 
 @router.callback_query(F.data.startswith("law_"), AddFilterStates.law_type)
 async def process_law_type(callback: CallbackQuery, state: FSMContext):
     law = callback.data.replace("law_", "")
-    if law == "all": law = None
+    if law == "all":
+        law = None
     await state.update_data(law_type=law)
+
     await state.set_state(AddFilterStates.okpd2)
-    await callback.message.edit_text("📊 Шаг 8/8: Введите <b>коды ОКПД2</b>:", parse_mode=ParseMode.HTML, reply_markup=skip_keyboard())
+    await callback.message.edit_text(
+        "📊 Шаг 8/8: Введите <b>коды ОКПД2</b>\n\n"
+        "Если не знаете — просто нажмите «⏭ Пропустить этот шаг»",
+        parse_mode=ParseMode.HTML,
+        reply_markup=skip_keyboard(),
+    )
     await callback.answer()
 
 
@@ -387,23 +503,69 @@ async def skip_okpd2(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AddFilterStates.okpd2)
 async def process_okpd2(message: Message, state: FSMContext):
-    await state.update_data(okpd2_codes=message.text.strip())
+    ok_text = message.text.strip() if message.text else None
+    await state.update_data(okpd2_codes=ok_text)
     await show_filter_summary(message, state)
 
 
 async def show_filter_summary(message: Message, state: FSMContext):
     data = await state.get_data()
     await state.set_state(AddFilterStates.confirm)
-    summary = f"📋 <b>Проверьте ваш фильтр: «{html.escape(str(data.get('name', '-')))}»</b>\n\nСохраняем?"
-    await message.answer(summary, parse_mode=ParseMode.HTML, reply_markup=confirm_keyboard())
+
+    summary = "📋 <b>Проверьте ваш фильтр:</b>\n\n"
+    summary += f"📌 Название: <b>{html.escape(str(data.get('name', '-')))}</b>\n"
+
+    if data.get("keywords"):
+        kw_show = str(data["keywords"])
+        if len(kw_show) > 120:
+            kw_show = kw_show[:120] + "..."
+        summary += f"🔍 Ключевые слова: {html.escape(kw_show)}\n"
+
+    if data.get("exclude_keywords"):
+        ex_show = str(data["exclude_keywords"])
+        if len(ex_show) > 100:
+            ex_show = ex_show[:100] + "..."
+        summary += f"🚫 Исключения: {html.escape(ex_show)}\n"
+
+    if data.get("min_price") is not None:
+        summary += f"💰 Мин. цена: {data['min_price']:,.0f} ₽\n"
+    if data.get("max_price") is not None:
+        summary += f"💰 Макс. цена: {data['max_price']:,.0f} ₽\n"
+    if data.get("regions"):
+        summary += f"📍 Регионы: {html.escape(str(data['regions']))}\n"
+    if data.get("law_type"):
+        summary += f"📜 Закон: {html.escape(str(data['law_type']))}-ФЗ\n"
+
+    summary += "\nСохраняем?"
+
+    await message.answer(
+        summary, parse_mode=ParseMode.HTML, reply_markup=confirm_keyboard()
+    )
 
 
 @router.callback_query(F.data == "confirm_save", AddFilterStates.confirm)
 async def save_filter(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    await add_filter(callback.from_user.id, data)
+
+    filter_data = {
+        "name": data.get("name", "Без названия"),
+        "keywords": data.get("keywords"),
+        "exclude_keywords": data.get("exclude_keywords"),
+        "min_price": data.get("min_price"),
+        "max_price": data.get("max_price"),
+        "regions": data.get("regions"),
+        "law_type": data.get("law_type"),
+        "okpd2_codes": data.get("okpd2_codes"),
+    }
+
+    new_filter = await add_filter(callback.from_user.id, filter_data)
     await state.clear()
-    await callback.message.edit_text("✅ Фильтр сохранен!", parse_mode=ParseMode.HTML)
+
+    await callback.message.edit_text(
+        f"✅ Фильтр <b>«{html.escape(str(filter_data['name']))}»</b> успешно сохранен!\n\n"
+        f"Бот будет автоматически сканировать закупки каждые 15 минут.",
+        parse_mode=ParseMode.HTML,
+    )
     await callback.message.answer("Выберите действие:", reply_markup=main_keyboard())
     await callback.answer()
 
@@ -416,77 +578,166 @@ async def cancel_filter(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+# === Мои фильтры ===
+
 @router.message(Command("my_filters"))
 @router.message(F.text == "🔍 Мои фильтры")
 async def show_filters(message: Message):
     filters = await get_user_filters(message.from_user.id)
+
     if not filters:
-        await message.answer("📭 У вас пока нет созданных фильтров.", reply_markup=main_keyboard())
+        await message.answer(
+            "📭 У вас пока нет созданных фильтров.\n\n"
+            "Нажмите «➕ Добавить фильтр» чтобы создать первый.",
+            reply_markup=main_keyboard(),
+        )
         return
-    await message.answer(f"📋 <b>Ваши фильтры ({len(filters)}):</b>", parse_mode=ParseMode.HTML)
+
+    await message.answer(
+        f"📋 <b>Ваши сохраненные фильтры ({len(filters)}):</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
     for f in filters:
-        await message.answer(format_filter_info(f), parse_mode=ParseMode.HTML, reply_markup=filter_actions_keyboard(f.id))
+        text = format_filter_info(f)
+        await message.answer(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=filter_actions_keyboard(f.id),
+        )
 
 
 @router.callback_query(F.data.startswith("delete_filter_"))
 async def process_delete_filter(callback: CallbackQuery):
     filter_id = int(callback.data.replace("delete_filter_", ""))
-    if await delete_filter(filter_id, callback.from_user.id):
-        await callback.message.edit_text("🗑 Фильтр удален!")
+    success = await delete_filter(filter_id, callback.from_user.id)
+
+    if success:
+        await callback.message.edit_text("🗑 Фильтр успешно удалён!")
     else:
-        await callback.message.edit_text("❌ Ошибка удаления.")
+        await callback.message.edit_text("❌ Фильтр не найден.")
     await callback.answer()
 
+
+# === Ручная проверка ===
 
 @router.message(Command("check"))
 @router.message(F.text == "🔄 Проверить сейчас")
 async def manual_check(message: Message):
-    status_msg = await message.answer("🔄 Запущен сканер... Подождите ⏳")
+    filters = await get_user_filters(message.from_user.id)
+
+    if not filters:
+        await message.answer(
+            "📭 Сначала создайте хотя бы один фильтр по кнопке «➕ Добавить фильтр».",
+            reply_markup=main_keyboard(),
+        )
+        return
+
+    status_msg = await message.answer(
+        "🔄 Запущен сканер закупок...\n"
+        "Пожалуйста, подождите немного ⏳",
+    )
+
     checker: PurchaseChecker = message.bot.__dict__.get("purchase_checker")
     if checker:
         count = await checker.manual_check(message.from_user.id)
-        await status_msg.edit_text(f"✅ Проверка завершена! Найдено лотов: <b>{count}</b>", parse_mode=ParseMode.HTML)
+        await status_msg.edit_text(
+            f"✅ Проверка завершена!\n"
+            f"Прислано новых релевантных закупок: <b>{count}</b>",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await status_msg.edit_text("❌ Сервис проверки временно недоступен.")
 
+
+# === Быстрый поиск ===
 
 @router.message(Command("search"))
 @router.message(F.text == "🔎 Быстрый поиск")
 async def start_quick_search(message: Message, state: FSMContext):
     await state.set_state(QuickSearchStates.query)
-    await message.answer("🔎 Введите ключевое слово:", reply_markup=cancel_keyboard())
+    await message.answer(
+        "🔎 Введите ключевое слово или фразу для быстрого поиска:\n\n"
+        "Пример: сантехника или капремонт",
+        reply_markup=cancel_keyboard(),
+    )
 
 
 @router.message(QuickSearchStates.query)
 async def process_quick_search(message: Message, state: FSMContext):
-    query = message.text.strip()
+    query = message.text.strip() if message.text else ""
     await state.clear()
-    status_msg = await message.answer(f"🔍 Ищу «{html.escape(query)}»...", reply_markup=main_keyboard())
+
+    status_msg = await message.answer(f"🔍 Ищу закупки по запросу «{html.escape(query)}»...", reply_markup=main_keyboard())
+
     parser = ZakupkiParser()
     try:
         purchases = await parser.search_purchases(keywords=query, days_back=30)
+
         if not purchases:
-            await status_msg.edit_text("😔 Ничего не найдено.")
+            await status_msg.edit_text(
+                f"😔 По запросу «{html.escape(query)}» ничего не найдено.\nПопробуйте изменить слово.",
+            )
         else:
-            await status_msg.edit_text(f"✅ Найдено закупок: <b>{len(purchases)}</b>", parse_mode=ParseMode.HTML)
+            await status_msg.edit_text(
+                f"✅ Найдено закупок: <b>{len(purchases)}</b>\nПоказываю первые {min(len(purchases), 5)}:",
+                parse_mode=ParseMode.HTML,
+            )
+
             for purchase in purchases[:5]:
                 await cache_purchase(purchase)
+                text = format_purchase(purchase)
                 markup = await get_purchase_markup(message.from_user.id, purchase)
-                await message.answer(format_purchase(purchase), parse_mode=ParseMode.HTML, reply_markup=markup, disable_web_page_preview=True)
+
+                await message.answer(
+                    text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=markup,
+                    disable_web_page_preview=True,
+                )
                 await asyncio.sleep(0.3)
+    except Exception as e:
+        logger.error(f"Ошибка быстрого поиска: {e}")
+        await status_msg.edit_text("❌ Ошибка при поиске. Попробуйте позже.")
     finally:
         await parser.close()
 
 
+# === Настройки ===
+
 @router.message(F.text == "⚙️ Настройки")
 async def settings(message: Message):
-    filters = await get_user_filters(message.from_user.id)
-    await message.answer(f"⚙️ <b>Настройки</b>\n\n📊 Ваши фильтры: {len(filters)}\n🧠 ИИ-Аналитик: ✅ Подключен (DeepSeek)", parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
+    from config import CHECK_INTERVAL
 
+    filters = await get_user_filters(message.from_user.id)
+
+    text = (
+        "⚙️ <b>Настройки системы</b>\n\n"
+        f"📊 Ваши фильтры: {len(filters)}\n"
+        f"⏱ Авто-проверка: каждые {CHECK_INTERVAL} мин.\n"
+    )
+
+    await message.answer(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
+
+
+# === Глобальный защитный обработчик ошибок ===
 
 @router.error()
 async def global_error_handler(event, exception):
-    logger.error(f"Ошибка в обработчике: {exception}", exc_info=True)
+    logger.error(f"Перехвачена ошибка в обработчике: {exception}", exc_info=True)
+    if hasattr(event, "message") and event.message:
+        try:
+            await event.message.answer(
+                "⚠️ Произошла заминка при обработке текста.\n"
+                "Пожалуйста, продолжите шаг или нажмите /start.",
+                reply_markup=main_keyboard()
+            )
+        except Exception:
+            pass
     return True
 
+
+# === Регистрация меню в Telegram ===
 
 async def set_bot_commands(bot: Bot):
     commands = [
@@ -499,20 +750,26 @@ async def set_bot_commands(bot: Bot):
     await bot.set_my_commands(commands)
 
 
+# === Main ===
+
 async def main():
-    print("!!! ЗАПУСК БОТА С ИИ-АНАЛИТИКОМ !!!")
+    print("!!! ЗАПУСК БОТА В ЧИСТОМ РЕЖИМЕ !!!")
     await init_db()
 
     if not BOT_TOKEN or "ВАШ_ТОКЕН" in BOT_TOKEN:
-        print("❌ ОШИБКА: Токен не найден!")
+        print("❌ ОШИБКА: Токен бота не найден в переменных окружения!")
+        logger.error("Токен бота не найден!")
         return
 
     session = IPv4AiohttpSession(timeout=35.0)
     bot = Bot(token=BOT_TOKEN, session=session)
 
     try:
-        try: await set_bot_commands(bot)
-        except Exception as e: logger.warning(f"Пропущена установка меню: {e}")
+        try:
+            await set_bot_commands(bot)
+            print("✅ Официальное меню команд Telegram установлено!")
+        except Exception as e:
+            logger.warning(f"Пропущена установка меню команд: {e}")
 
         storage = MemoryStorage()
         dp = Dispatcher(storage=storage)
@@ -522,23 +779,33 @@ async def main():
         bot.__dict__["purchase_checker"] = checker
         await checker.start()
 
-        print("🚀🚀🚀 БОТ С ИИ-АНАЛИТИКОМ УСПЕШНО ЗАПУЩЕН! 🚀🚀🚀")
+        print("🚀🚀🚀 БОТ УСПЕШНО ЗАПУЩЕН И ГОТОВ К РАБОТЕ! 🚀🚀🚀")
+        logger.info("Бот запущен и готов к работе!")
 
-        try: await bot.delete_webhook(drop_pending_updates=True)
-        except Exception: pass
+        try:
+            await bot.delete_webhook(drop_pending_updates=True)
+        except Exception as e:
+            logger.warning(f"Игнорируем ошибку delete_webhook: {e}")
 
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
     finally:
         if "purchase_checker" in bot.__dict__:
-            try: await bot.__dict__["purchase_checker"].stop()
-            except Exception: pass
-        try: await bot.session.close()
-        except Exception: pass
+            try:
+                await bot.__dict__["purchase_checker"].stop()
+            except Exception:
+                pass
+        try:
+            await bot.session.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    try: asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): logger.info("Бот остановлен.")
+    
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Бот остановлен.")
