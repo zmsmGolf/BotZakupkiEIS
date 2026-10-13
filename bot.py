@@ -26,13 +26,17 @@ from filters_manager import format_filter_info, format_purchase
 from scheduler import PurchaseChecker, get_purchase_markup
 from zakupki_parser import ZakupkiParser
 
-CF_WORKER_URL = os.getenv("CF_WORKER_URL", "https://my-tg-proxy.zretsky.workers.dev/")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
+# Настройка моста через Cloudflare
+CF_WORKER_URL = "https://my-tg-proxy.zretsky.workers.dev"
+from aiogram.client.telegram import TelegramAPIServer
+CUSTOM_TG_API = TelegramAPIServer.from_base(CF_WORKER_URL)
 
 # === Оптимизированная сессия IPv4 ===
 
