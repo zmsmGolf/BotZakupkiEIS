@@ -12,7 +12,7 @@ if "ВАШ_ТОКЕН" in raw_token or not raw_token:
 else:
     BOT_TOKEN = raw_token
 
-CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 30))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", 15))
 
 # Сохранение базы данных в защищенную папку Bothost (/app/data)
 if os.path.exists("/app/data"):
