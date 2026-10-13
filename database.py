@@ -306,3 +306,12 @@ async def get_favorites(telegram_id: int) -> list[FavoritePurchase]:
             .order_by(FavoritePurchase.added_at.desc())
         )
         return res.scalars().all()
+
+async def get_cached_purchase_by_number(purchase_number: str) -> Optional[PurchaseCache]:
+    """Получить закупку из кэша для ИИ-анализа"""
+    async with async_session() as session:
+        from sqlalchemy import select
+        result = await session.execute(
+            select(PurchaseCache).where(PurchaseCache.purchase_number == purchase_number)
+        )
+        return result.scalar_one_or_none()
