@@ -1,6 +1,7 @@
+from typing import Optional, List
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float, DateTime, Boolean, Text,
-    create_engine, ForeignKey
+    ForeignKey, select
 )
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, relationship
@@ -95,7 +96,6 @@ class PurchaseCache(Base):
     cached_at = Column(DateTime, default=datetime.utcnow)
 
 
-# Создание движка и сессий
 engine = create_async_engine(DATABASE_URL, echo=False)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
@@ -114,7 +114,6 @@ async def get_session() -> AsyncSession:
 
 async def get_or_create_user(telegram_id: int, username: str = None) -> User:
     async with async_session() as session:
-        from sqlalchemy import select
         result = await session.execute(
             select(User).where(User.telegram_id == telegram_id)
         )
@@ -127,9 +126,8 @@ async def get_or_create_user(telegram_id: int, username: str = None) -> User:
         return user
 
 
-async def get_user_filters(telegram_id: int) -> list[UserFilter]:
+async def get_user_filters(telegram_id: int) -> List[UserFilter]:
     async with async_session() as session:
-        from sqlalchemy import select
         result = await session.execute(
             select(UserFilter)
             .join(User)
@@ -140,7 +138,6 @@ async def get_user_filters(telegram_id: int) -> list[UserFilter]:
 
 async def add_filter(telegram_id: int, filter_data: dict) -> UserFilter:
     async with async_session() as session:
-        from sqlalchemy import select
         result = await session.execute(
             select(User).where(User.telegram_id == telegram_id)
         )
@@ -159,7 +156,6 @@ async def add_filter(telegram_id: int, filter_data: dict) -> UserFilter:
 
 async def delete_filter(filter_id: int, telegram_id: int) -> bool:
     async with async_session() as session:
-        from sqlalchemy import select
         result = await session.execute(
             select(UserFilter)
             .join(User)
@@ -175,7 +171,6 @@ async def delete_filter(filter_id: int, telegram_id: int) -> bool:
 
 async def is_purchase_sent(user_id: int, purchase_number: str) -> bool:
     async with async_session() as session:
-        from sqlalchemy import select
         result = await session.execute(
             select(SentPurchase).where(
                 SentPurchase.user_id == user_id,
@@ -192,21 +187,18 @@ async def mark_purchase_sent(user_id: int, purchase_number: str):
         await session.commit()
 
 
-async def get_all_active_users() -> list[User]:
+async def get_all_active_users() -> List[User]:
     async with async_session() as session:
-        from sqlalchemy import select
         result = await session.execute(
             select(User).where(User.is_active == True)
         )
         return result.scalars().all()
 
 
-# === Работа с Избранным ===
+# === Избранное и Кэш ===
 
 async def cache_purchase(purchase) -> None:
-    """Сохранение закупки в кэш, чтобы при нажатии кнопки 'В избранное' подтянуть данные"""
     async with async_session() as session:
-        from sqlalchemy import select
         result = await session.execute(
             select(PurchaseCache).where(PurchaseCache.purchase_number == purchase.number)
         )
@@ -226,16 +218,12 @@ async def cache_purchase(purchase) -> None:
 
 
 async def add_favorite(telegram_id: int, purchase_number: str) -> bool:
-    """Добавить закупку в избранное (из кэша)"""
     async with async_session() as session:
-        from sqlalchemy import select
-        # Получаем пользователя
         user_res = await session.execute(select(User).where(User.telegram_id == telegram_id))
         user = user_res.scalar_one_or_none()
         if not user:
             return False
 
-        # Проверяем, нет ли уже в избранном
         fav_res = await session.execute(
             select(FavoritePurchase).where(
                 FavoritePurchase.user_id == user.id,
@@ -243,9 +231,8 @@ async def add_favorite(telegram_id: int, purchase_number: str) -> bool:
             )
         )
         if fav_res.scalar_one_or_none():
-            return True  # Уже добавлено
+            return True
 
-        # Берем данные из кэша
         cache_res = await session.execute(
             select(PurchaseCache).where(PurchaseCache.purchase_number == purchase_number)
         )
@@ -267,9 +254,7 @@ async def add_favorite(telegram_id: int, purchase_number: str) -> bool:
 
 
 async def remove_favorite(telegram_id: int, purchase_number: str) -> bool:
-    """Удалить закупку из избранного"""
     async with async_session() as session:
-        from sqlalchemy import select
         res = await session.execute(
             select(FavoritePurchase)
             .join(User)
@@ -284,9 +269,7 @@ async def remove_favorite(telegram_id: int, purchase_number: str) -> bool:
 
 
 async def is_favorite(telegram_id: int, purchase_number: str) -> bool:
-    """Проверить, добавлена ли закупка в избранное"""
     async with async_session() as session:
-        from sqlalchemy import select
         res = await session.execute(
             select(FavoritePurchase)
             .join(User)
@@ -295,10 +278,8 @@ async def is_favorite(telegram_id: int, purchase_number: str) -> bool:
         return res.scalar_one_or_none() is not None
 
 
-async def get_favorites(telegram_id: int) -> list[FavoritePurchase]:
-    """Получить список всех избранных закупок пользователя"""
+async def get_favorites(telegram_id: int) -> List[FavoritePurchase]:
     async with async_session() as session:
-        from sqlalchemy import select
         res = await session.execute(
             select(FavoritePurchase)
             .join(User)
@@ -307,10 +288,10 @@ async def get_favorites(telegram_id: int) -> list[FavoritePurchase]:
         )
         return res.scalars().all()
 
+
 async def get_cached_purchase_by_number(purchase_number: str) -> Optional[PurchaseCache]:
     """Получить закупку из кэша для ИИ-анализа"""
     async with async_session() as session:
-        from sqlalchemy import select
         result = await session.execute(
             select(PurchaseCache).where(PurchaseCache.purchase_number == purchase_number)
         )
